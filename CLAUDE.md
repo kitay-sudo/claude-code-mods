@@ -1,6 +1,6 @@
 # Моды для Claude Code
 
-Каждая папка верхнего уровня это один мод (function-hooks плагин). `.claude-plugin/marketplace.json` перечисляет их для маркетплейса `local-mods`, который подключён прямо к этой папке. Моды грузятся отсюда в каждый новый чат.
+Каждая папка верхнего уровня это один мод (function-hooks плагин). `.claude-plugin/marketplace.json` перечисляет их все. `install.ps1` прописывает их папки в `CLAUDE_CODE_PLUGIN_DIRS` в `~/.claude/settings.json` и включает слежение `CLAUDE_CODE_PLUGIN_DIR_WATCH=1`: моды грузятся прямо отсюда, и каждый чат подхватывает правку сам. Данные модов лежат в `~/.claude/plugins/store/<мод>_inline-*.json`.
 
 ## Как править мод
 
@@ -8,8 +8,9 @@
 2. Логику без `$` держи в `hooks/*.ts` рядом с `register.tsx`, её проверяют тесты в `tests/`.
 3. Значения в `$.state` объявляй в `types/index.d.ts` мода.
 4. Проверяй: `powershell -ExecutionPolicy Bypass -File .\check.ps1 <мод>`. Без имени проверяются все моды, и заодно обновляются бейджи в `.github/badges` и версии в таблице README.
-5. Новый мод: папка с `.claude-plugin/plugin.json`, `hooks/hooks.json`, `hooks/register.tsx`, `tests/`, строка в `marketplace.json`, затем `install.ps1`.
-6. После правки: коммит и `git push`. Изменения подхватываются в новом чате или после `/reload-plugins`.
+5. Новый мод: папка с `.claude-plugin/plugin.json`, `hooks/hooks.json`, `hooks/register.tsx`, `tests/`, строка в `marketplace.json`, затем `install.ps1`, чтобы папка попала в настройки.
+6. После правки: коммит и `git push`. Открытые чаты подхватывают изменения сами через пару секунд после сохранения.
+7. Правь файлы целиком и аккуратно: каждое сохранение сразу перезагружает мод во всех чатах, поэтому незаконченная правка тоже до них дойдёт.
 
 ## Общий блок над полем ввода
 
