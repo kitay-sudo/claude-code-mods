@@ -98,6 +98,12 @@ async function tell($: EngineInterface, text: string): Promise<void> {
   }
 }
 
+/** A hint as a sentence: capital first, a full stop last. */
+function sentence(text: string): string {
+  const line = text.trim()
+  return line === '' ? line : `${line[0]?.toUpperCase() ?? ''}${line.slice(1)}${/[.!?]$/.test(line) ? '' : '.'}`
+}
+
 async function personAdd($: EngineInterface): Promise<void> {
   const form = await read($, draft)
   const checked = checkText(form.text)
@@ -215,6 +221,8 @@ export const register: Register = on => {
     return { result: `Записано в паспорт: ${summary}.` }
   })
 
+  // The pane in sections with air between them: headings a row above their
+  // content, the form's labels above its fields, settings as label and value.
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e): Promise<RenderElement> => {
     const elements = $.ui.resolve(e)
     const { Box, Text, Button } = elements
@@ -228,46 +236,68 @@ export const register: Register = on => {
     const name = await read($, project)
     const isEmpty = current.notes.length === 0 && current.replyLanguage === null
 
+    const heading = (key: string, text: string) => (
+      <Box key={key} marginBottom={1}>
+        <Text dimColor>{text}</Text>
+      </Box>
+    )
+
     return (
       <Box flexDirection="column">
-        <Text dimColor>ПАСПОРТ ПРОЕКТА</Text>
-        <Text bold>{name}</Text>
-        <Box marginTop={1} gap={1} flexWrap="wrap">
-          <Text dimColor>Клиенту пишем:</Text>
-          {(['ru', 'en', 'ru+en'] as const).map(language => (
-            <Button
-              key={`lang-${language}`}
-              label={LANGUAGE_LABELS[language]}
-              {...(current.replyLanguage === language ? { variant: 'primary' as const } : {})}
-              onPress={() => void setLanguage($, language)}
-            />
-          ))}
+        {heading('h-title', 'ПАСПОРТ ПРОЕКТА')}
+        <Text>{name}</Text>
+
+        <Box marginTop={2} flexDirection="column">
+          {heading('h-lang', 'НА КАКОМ ЯЗЫКЕ ПИСАТЬ КЛИЕНТУ')}
+          <Box gap={1} flexWrap="wrap">
+            {(['ru', 'en', 'ru+en'] as const).map(language => (
+              <Button
+                key={`lang-${language}`}
+                label={LANGUAGE_LABELS[language]}
+                {...(current.replyLanguage === language ? { variant: 'primary' as const } : {})}
+                onPress={() => void setLanguage($, language)}
+              />
+            ))}
+          </Box>
+          <Box marginTop={1}>
+            <Text dimColor wrap="wrap">
+              {current.replyLanguage === null ? 'Не выбран. Нажми нужный.' : `Клиенту пишем ${LANGUAGES[current.replyLanguage]}.`}
+            </Text>
+          </Box>
         </Box>
 
         {SECTIONS.map(section => {
           const notes = current.notes.filter(note => note.section === section.id)
           return (
-            <Box key={`sec-${section.id}`} marginTop={1} flexDirection="column">
-              <Text dimColor>{section.title.toUpperCase()}</Text>
-              {notes.length === 0 && <Text dimColor>— {section.hint}</Text>}
-              {notes.map(note =>
+            <Box key={`sec-${section.id}`} marginTop={2} flexDirection="column">
+              {heading(`h-${section.id}`, section.title.toUpperCase())}
+              {notes.length === 0 && (
+                <Text dimColor wrap="wrap">
+                  {sentence(section.hint)}
+                </Text>
+              )}
+              {notes.map((note, index) =>
                 waiting === note.id ? (
-                  <Box key={`row-${note.id}`} gap={1} flexWrap="wrap">
+                  <Box key={`row-${note.id}`} flexDirection="column" {...(index > 0 ? { marginTop: 1 } : {})}>
                     <Text color="warning" wrap="wrap">
-                      Убрать «{note.text}»?
+                      Убрать "{note.text}"?
                     </Text>
-                    <Button key={`yes-${note.id}`} label="Да" onPress={() => void deleteNote($, note.id)} />
-                    <Button key={`no-${note.id}`} label="Нет" onPress={() => void update($, confirming, () => null)} />
+                    <Box marginTop={1} gap={1}>
+                      <Button key={`yes-${note.id}`} label="Да, убрать" onPress={() => void deleteNote($, note.id)} />
+                      <Button key={`no-${note.id}`} label="Отмена" onPress={() => void update($, confirming, () => null)} />
+                    </Box>
                   </Box>
                 ) : (
-                  <Box key={`row-${note.id}`}>
+                  <Box key={`row-${note.id}`} {...(index > 0 ? { marginTop: 1 } : {})}>
                     <Box flexGrow={1}>
                       <Text wrap="wrap">
                         • {note.text}
                         {note.by === 'claude' ? <Text dimColor> · Claude</Text> : ''}
                       </Text>
                     </Box>
-                    <Button key={`del-${note.id}`} plain label="✕" onPress={() => void update($, confirming, () => note.id)} />
+                    <Box flexShrink={0} marginLeft={1}>
+                      <Button key={`del-${note.id}`} plain label="✕" onPress={() => void update($, confirming, () => note.id)} />
+                    </Box>
                   </Box>
                 ),
               )}
@@ -276,40 +306,67 @@ export const register: Register = on => {
         })}
 
         {Input !== undefined && Select !== undefined && (
-          <Box marginTop={1} flexDirection="column">
-            <Text dimColor>ДОБАВИТЬ</Text>
-            <Select
-              key="pp-section"
-              label="Раздел"
-              options={SECTIONS.map(section => ({ value: section.id, label: section.title }))}
-              value={form.section}
-              onSelect={value => void editDraft($, { section: isSection(value) ? value : 'rules' })}
-            />
-            <Input
-              key="pp-text"
-              label="Заметка"
-              placeholder="Например: Денису пишем по-английски, коротко и без смайлов"
-              value={form.text}
-              onInput={value => void editDraft($, { text: value })}
-              onSubmit={value => void editDraft($, { text: value }).then(() => personAdd($))}
-            />
+          <Box marginTop={2} flexDirection="column">
+            {heading('h-add', 'ДОБАВИТЬ ЗАМЕТКУ')}
+            <Text>Раздел</Text>
+            <Box marginTop={1}>
+              <Select
+                key="pp-section"
+                options={SECTIONS.map(section => ({ value: section.id, label: section.title }))}
+                value={form.section}
+                onSelect={value => void editDraft($, { section: isSection(value) ? value : 'rules' })}
+              />
+            </Box>
+            <Box marginTop={2} flexDirection="column">
+              <Text>Заметка</Text>
+              <Box marginTop={1} flexDirection="column">
+                <Input
+                  key="pp-text"
+                  placeholder="Например: Денису пишем по-английски, коротко и без смайлов"
+                  value={form.text}
+                  onInput={value => void editDraft($, { text: value })}
+                  onSubmit={value => void editDraft($, { text: value }).then(() => personAdd($))}
+                />
+                <Box marginTop={1}>
+                  <Text dimColor wrap="wrap">
+                    Одна мысль одной строкой. Пароли и ключи сюда не пишем.
+                  </Text>
+                </Box>
+              </Box>
+            </Box>
             {form.error !== '' && (
-              <Text color="error" wrap="wrap">
-                {form.error}
-              </Text>
+              <Box marginTop={1}>
+                <Text color="error" wrap="wrap">
+                  {form.error}
+                </Text>
+              </Box>
             )}
-            <Box>
+            <Box marginTop={2}>
               <Button key="pp-add" label="Добавить" onPress={() => void personAdd($)} />
             </Box>
           </Box>
         )}
 
-        <Box marginTop={1} gap={1} flexWrap="wrap">
-          <Button key="pp-fill" variant="primary" label={isEmpty ? 'Заполнить из проекта' : 'Дополнить из проекта'} onPress={() => void fill($)} />
+        <Box marginTop={2} flexDirection="column">
+          {heading('h-fill', 'ЗАПОЛНИТЬ ИЗ ПРОЕКТА')}
+          <Text dimColor wrap="wrap">
+            Claude прочитает README, файлы проекта, деплой и git и сам запишет, что найдёт. Чего из файлов не понять, спросит у тебя.
+          </Text>
+          <Box marginTop={1}>
+            <Button key="pp-fill" variant="primary" label={isEmpty ? 'Заполнить из проекта' : 'Дополнить из проекта'} onPress={() => void fill($)} />
+          </Box>
         </Box>
-        <Box marginTop={1} gap={1} flexWrap="wrap">
-          <Button key="pp-autoopen" label={mode.autoOpen ? 'Открывать при старте: да' : 'Открывать при старте: нет'} onPress={() => void toggleAutoOpen($)} />
-          <Button key="pp-ask" label={mode.askBeforeAdd ? 'Записи Claude: с вопросом' : 'Записи Claude: без вопроса'} onPress={() => void toggleAsk($)} />
+
+        <Box marginTop={2} marginBottom={1} flexDirection="column">
+          {heading('h-settings', 'НАСТРОЙКИ')}
+          <Box justifyContent="space-between">
+            <Text>Открывать при старте чата</Text>
+            <Button key="pp-autoopen" label={mode.autoOpen ? 'да' : 'нет'} onPress={() => void toggleAutoOpen($)} />
+          </Box>
+          <Box marginTop={1} justifyContent="space-between">
+            <Text>Записи Claude</Text>
+            <Button key="pp-ask" label={mode.askBeforeAdd ? 'с вопросом' : 'без вопроса'} onPress={() => void toggleAsk($)} />
+          </Box>
         </Box>
       </Box>
     )

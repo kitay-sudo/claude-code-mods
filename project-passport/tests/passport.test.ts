@@ -108,10 +108,28 @@ test('the pane opens by itself where there is a passport, and edits it', async (
   expect(await brief($)).toContain('written in Russian')
 
   await pane.press({ key: 'del-n1' })
-  expect(await pane.find({ type: 'Text', text: /Убрать «Клиент: Денис»/ })).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: /Убрать "Клиент: Денис"/ })).toBeDefined()
   await pane.press({ key: 'yes-n1' })
   expect(await pane.find({ type: 'Text', text: /• Клиент: Денис/ })).toBeUndefined()
 
   await pane.press({ key: 'pp-fill' })
   expect(submitted[0]).toContain('Заполни паспорт этого проекта')
+})
+
+test('the pane reads in sections: no long dashes, labels above the fields, settings as rows, nothing bold', async ($, on) => {
+  world(on)
+  await $.session.start({ cwd: 'C:\\work\\acme-crm', surface: 'desktop', isInteractive: true })
+  const pane = await $.ui.mount({ plugin: 'project-passport', surface: 'desktop', component: 'Pane', requestId: 'project-passport', props: PANE })
+  const texts = (await pane.findAll({ type: 'Text' })).map(found => found.text)
+
+  expect(texts.filter(text => /[—–]/.test(text))).toEqual([])
+  for (const one of ['Кто клиент, как и на каком языке с ним общаться.', 'Не выбран. Нажми нужный.', 'Раздел', 'Заметка', 'Открывать при старте чата', 'Записи Claude']) {
+    expect(texts).toContain(one)
+  }
+  // The fields carry no labels of their own: theirs stand above them.
+  expect((await pane.find({ type: 'Select', key: 'pp-section' }))?.props.label).toBeUndefined()
+  expect((await pane.find({ type: 'Input', key: 'pp-text' }))?.props.label).toBeUndefined()
+  expect((await pane.find({ type: 'Button', key: 'pp-autoopen' }))?.text).toBe('да')
+  expect((await pane.find({ type: 'Button', key: 'pp-ask' }))?.text).toBe('с вопросом')
+  expect((await pane.findAll({ type: 'Text' })).filter(found => found.props.bold === true)).toEqual([])
 })
