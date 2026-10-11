@@ -287,12 +287,22 @@ test('nothing sticks together: a blank row under headings and labels, settings o
 
 test('the card shows the server\'s health, the band its worst problem, and the errors go to Claude in one press', async ($, on) => {
   const { clock, ran, sim, submitted, toasts } = world(on, { [STORE_KEY]: { servers: [PROD], settings: { confirm: 'every', band: true } } })
-  sim.vitals = 'load=0.5\ncpus=2\nmem=1229/3891\ndisk=41/12000\nkind=compose\nsvc=web|running|\nsvc=worker|running|\nerr=ERROR connection refused to db:5432\n'
+  sim.vitals =
+    'load=0.5\ncpus=2\nmem=1229/3891\ndisk=41/12000\nkind=compose\nsvc=web|running|\nsvc=worker|running|\n' +
+    'logfile=storage/logs/laravel.log\nerr=ERROR connection refused to db:5432\n'
   await $.session.start({ cwd: 'C:\\proj', surface: 'desktop', isInteractive: true })
   await clock.settle()
   const pane = await $.ui.mount({ plugin: 'server-panel', surface: 'desktop', component: 'Pane', requestId: 'server-panel', props: PANE })
   let shown = (await pane.findAll({ type: 'Text' })).map(found => found.text)
-  for (const one of ['СОСТОЯНИЕ · Docker Compose', 'процессор 25% · память 1,2 ГБ из 3,8 ГБ', 'web', 'работает', 'ОШИБКИ В ЛОГАХ · 1', 'ERROR connection refused to db:5432']) {
+  for (const one of [
+    'СОСТОЯНИЕ · Docker Compose',
+    'процессор 25% · память 1,2 ГБ из 3,8 ГБ',
+    'web',
+    'работает',
+    'ОШИБКИ В ЛОГАХ · 1',
+    'откуда: Docker Compose, storage/logs/laravel.log',
+    'ERROR connection refused to db:5432',
+  ]) {
     expect(shown).toContain(one)
   }
 
@@ -307,7 +317,7 @@ test('the card shows the server\'s health, the band its worst problem, and the e
 
   // The logs land in the journal; the errors reach Claude as the person's request.
   await pane.press({ key: 'logs-prod' })
-  expect(commands(ran)).toContain("cd ~/'app' && docker compose logs --tail 60 --no-color 2>&1")
+  expect(commands(ran).some(command => String(command).startsWith("cd ~/'app' && docker compose logs --tail 60 --no-color 2>&1; for f in"))).toBe(true)
   await pane.press({ key: 'analyze-prod' })
   expect(submitted[0]).toContain('Разбери ошибки на сервере prod')
   expect(submitted[0]).toContain('ERROR connection refused to db:5432')

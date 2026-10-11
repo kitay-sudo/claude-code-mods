@@ -50,6 +50,8 @@ const LIMIT_MARKS = [80, 95]
 const BUDGET_MARKS = [80, 100]
 const SHOWN_DAYS = 7
 const DAY_BAR = 18
+// The time's mark; ⏱ is the cache's, beside it in the same block.
+const CLOCK = '🕐'
 
 const EMPTY_VIEW: SpendView = { sessionUsd: null, project: emptySpend(''), limits: [], today: '' }
 const EMPTY_DRAFT: SpendDraft = { budget: '', error: '' }
@@ -248,7 +250,7 @@ export const register: Register = (on, options) => {
         {shown.sessionUsd === null ? <Text dimColor>расход недоступен</Text> : <Text>сессия {money(shown.sessionUsd, rub)}</Text>}
         <Text dimColor>
           · проект {money(shown.project.usd, rub)} · сегодня {money(todayUsd, rub)}
-          {todayTime >= 60_000 ? ` за ${formatDuration(todayTime)}` : ''}
+          {todayTime >= 60_000 ? ` · ${CLOCK} ${formatDuration(todayTime)}` : ''}
         </Text>
         {budgetPercent !== null && <Text {...limitLook(budgetPercent)}>· бюджет {budgetPercent}%</Text>}
       </Box>
@@ -308,7 +310,7 @@ export const register: Register = (on, options) => {
         <Box marginTop={2} flexDirection="column">
           {heading('h-time', 'ВРЕМЯ НА ПРОЕКТ')}
           <Text>
-            сегодня {formatDuration(todayTime)} · 7 дней {formatDuration(weekTime)}
+            {CLOCK} сегодня {formatDuration(todayTime)} · 7 дней {formatDuration(weekTime)}
           </Text>
           <Text dimColor>
             всего с {shortDay(shown.project.since)}: {formatDuration(allTime)}
@@ -332,7 +334,7 @@ export const register: Register = (on, options) => {
                 <Text {...(one.usd === 0 && ms < 60_000 ? { dimColor: true } : {})}>
                   {' '}
                   {money(one.usd, rub)}
-                  {ms >= 60_000 ? ` · ${formatDuration(ms)}` : ''}
+                  {ms >= 60_000 ? ` · ${CLOCK} ${formatDuration(ms)}` : ''}
                 </Text>
               </Box>
             )

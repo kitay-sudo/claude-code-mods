@@ -34,7 +34,7 @@ import {
   tailOf,
 } from './ssh'
 import { joinRow } from './status-row'
-import { alerts, isUp, logsCommand, machineLines, parseVitals, runtimeName, shownServices, stateWord, vitalsArgs } from './vitals'
+import { alerts, isUp, logSources, logsCommand, machineLines, parseVitals, runtimeName, shownServices, stateWord, vitalsArgs } from './vitals'
 
 const PANE = 'server-panel'
 const PANE_TITLE = 'Сервер-пульт'
@@ -122,7 +122,9 @@ function briefing(list: readonly Server[], mode: PanelSettings): string {
     'data in the database, disk, services, containers), go to the server on your own initiative and check, ' +
     'instead of guessing or asking the user to run commands and paste the output. ' +
     'Logs by what runs the project: docker compose logs --tail 200 (Docker Compose, in the project folder), ' +
-    'docker logs --tail 200 <container> (Docker), pm2 logs --nostream --lines 200 (pm2), journalctl -u <service> -n 200 (systemd). ' +
+    'docker logs --tail 200 <container> (Docker), pm2 logs --nostream --lines 200 (pm2), journalctl -u <service> -n 200 (systemd), ' +
+    "and the framework's own files in the project folder (storage/logs for Laravel, var/log for Symfony, wp-content/debug.log for WordPress, logs/), " +
+    '/var/log/nginx/error.log for a site behind nginx. ' +
     `${mode.confirm === 'every' ? 'The user confirms each command with a button.' : 'Safe commands run at once; the user confirms only risky ones (deleting, restarts, database changes, firewall).'} ` +
     saving
   const lines = list.map(
@@ -305,8 +307,9 @@ async function personRefresh($: EngineInterface, name: string): Promise<void> {
 async function personLogs($: EngineInterface, name: string): Promise<void> {
   const server = (await read($, servers)).find(one => one.name === name)
   if (server === undefined) return
-  const runtime = (await read($, health))[name]?.vitals?.runtime ?? 'none'
-  const output = await execute($, server, logsCommand(runtime, LOG_LINES_SHOWN), 'person', 60)
+  const vitals = (await read($, health))[name]?.vitals
+  const units = vitals?.runtime === 'systemd' ? vitals.services.map(service => service.name) : []
+  const output = await execute($, server, logsCommand(vitals?.runtime ?? 'none', LOG_LINES_SHOWN, units), 'person', 60)
   await tell($, `Пользователь открыл логи ${server.name}.\n${output}`)
 }
 
@@ -863,6 +866,11 @@ export const register: Register = on => {
                   )}
                   <Box marginTop={2} flexDirection="column">
                     {heading(`h-errors-${server.name}`, state.vitals.errors.length === 0 ? 'ОШИБКИ В ЛОГАХ · нет' : `ОШИБКИ В ЛОГАХ · ${state.vitals.errors.length}`)}
+                    <Box marginBottom={1}>
+                      <Text dimColor wrap="wrap">
+                        откуда: {logSources(state.vitals)}
+                      </Text>
+                    </Box>
                     {state.vitals.errors.slice(-ERRORS_SHOWN).map((line, index) => (
                       <Box key={`e-${server.name}-${index}`} {...(index > 0 ? { marginTop: 1 } : {})}>
                         <Text dimColor wrap="wrap">

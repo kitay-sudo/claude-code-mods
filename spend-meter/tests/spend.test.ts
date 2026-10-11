@@ -179,10 +179,10 @@ test('time on the project: Claude at work and short pauses count, a break does n
   await say('Ещё поправь отступы')
 
   const band = await $.ui.mount({ plugin: 'spend-meter', surface: 'desktop', component: 'AbovePrompt', props: BAND })
-  expect(await band.find({ type: 'Text', text: / за 35 мин$/ })).toBeDefined()
+  expect(await band.find({ type: 'Text', text: / · 🕐 35 мин$/ })).toBeDefined()
   const pane = await $.ui.mount({ plugin: 'spend-meter', surface: 'desktop', component: 'Pane', requestId: 'spend-meter', props: PANE })
-  expect(await pane.find({ type: 'Text', text: 'сегодня 35 мин · 7 дней 35 мин' })).toBeDefined()
-  expect(await pane.find({ type: 'Text', text: /· 35 мин$/ })).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: '🕐 сегодня 35 мин · 7 дней 35 мин' })).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: /· 🕐 35 мин$/ })).toBeDefined()
   const context = (await $.prompt.context({ blocks: [] })).blocks.find(block => block.name === 'projectTime')?.text ?? ''
   expect(context).toContain('today 35 мин, last 7 days 35 мин')
   // Nothing on the pane is bold.

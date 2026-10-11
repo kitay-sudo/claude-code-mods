@@ -48,7 +48,7 @@ export type Service = {
 }
 
 /** What runs the project on the server, as the health check found it. */
-export type Runtime = 'compose' | 'docker' | 'pm2' | 'none'
+export type Runtime = 'compose' | 'docker' | 'pm2' | 'systemd' | 'none'
 
 /** The server's health from one read-only check. */
 export type Vitals = {
@@ -62,6 +62,8 @@ export type Vitals = {
   services: Service[]
   /** The last error lines of the project's logs, newest last. */
   errors: string[]
+  /** The project's own log files the errors were read from, newest first. */
+  logFiles: string[]
   /** The project folder is not on the server. */
   isDirMissing: boolean
 }
