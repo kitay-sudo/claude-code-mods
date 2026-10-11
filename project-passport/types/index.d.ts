@@ -45,6 +45,8 @@ declare module 'claude-code' {
       confirming: string | null
       /** The project's folder name, for the pane's title. */
       project: string
+      /** The last request a button handed to Claude, and when: shown under the buttons, a repeat soon after ignored. */
+      asked: { what: 'fill' | 'sort'; at: number } | null
     }
   }
 }

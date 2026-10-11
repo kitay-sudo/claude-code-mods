@@ -214,6 +214,10 @@ test('the client in the passport, the code in CLAUDE.md: the model is told, and 
   const pane = await $.ui.mount({ plugin: 'project-passport', surface: 'desktop', component: 'Pane', requestId: 'project-passport', props: PANE })
   await pane.press({ key: 'pp-fill' })
   expect(submitted[0]).toContain('Стек, команды и правила по коду не переписывай')
+  // The press says at once that it went, and a second one right after sends nothing more.
+  expect(await pane.find({ type: 'Text', text: '✓ Передал Claude: заполнить паспорт. Ответ будет в чате.' })).toBeDefined()
+  await pane.press({ key: 'pp-fill' })
+  expect(submitted).toHaveLength(1)
   await pane.press({ key: 'pp-sort' })
   expect(submitted[1]).toContain('Разбери паспорт проекта и CLAUDE.md')
   expect(submitted[1]).toContain('Сначала покажи мне списком, что куда переносишь')

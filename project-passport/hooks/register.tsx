@@ -71,6 +71,12 @@ const settings = atom({ plugin: 'project-passport', key: 'settings' } as const, 
 const draft = atom({ plugin: 'project-passport', key: 'draft' } as const, EMPTY_DRAFT)
 const confirming = atom({ plugin: 'project-passport', key: 'confirming' } as const, null)
 const project = atom({ plugin: 'project-passport', key: 'project' } as const, '')
+const asked = atom({ plugin: 'project-passport', key: 'asked' } as const, null)
+// A second press within this time is the same request: it is not sent again.
+const REPEAT_MS = 15_000
+// How long "✓ Передал Claude" stays under the buttons.
+const SENT_SHOWN_MS = 60_000
+const ASKED_WORDS = { fill: 'заполнить паспорт', sort: 'разобрать паспорт и CLAUDE.md' } as const
 
 async function storeKey($: EngineInterface): Promise<string> {
   const cwd = await $.session.cwd()
@@ -165,10 +171,16 @@ async function clearSection($: EngineInterface, section: Section): Promise<void>
 }
 
 /** A request handed to Claude as the person's own. */
-async function askClaude($: EngineInterface, text: string): Promise<void> {
+async function askClaude($: EngineInterface, what: 'fill' | 'sort', text: string): Promise<void> {
+  const at = await $.clock.now()
+  const last = await read($, asked)
+  if (last !== null && last.what === what && at - last.at < REPEAT_MS) return
+  await update($, asked, () => ({ what, at }))
+  $.ui.toast(`Передал Claude: ${ASKED_WORDS[what]}. Если он сейчас занят, начнёт после текущего шага.`)
   try {
     await $.prompt.submit({ text, asUser: true })
   } catch (error) {
+    await update($, asked, () => null)
     $.ui.toast(`Не удалось попросить Claude: ${String(error)}`)
   }
 }
@@ -261,6 +273,9 @@ export const register: Register = on => {
     const waiting = await read($, confirming)
     const name = await read($, project)
     const isEmpty = current.notes.length === 0 && current.replyLanguage === null
+    const lastAsked = await read($, asked)
+    const sentAt = await $.clock.now()
+    const sent = lastAsked !== null && sentAt - lastAsked.at < SENT_SHOWN_MS ? lastAsked : null
 
     const heading = (key: string, text: string) => (
       <Box key={key} marginBottom={1}>
@@ -405,9 +420,16 @@ export const register: Register = on => {
             </Text>
           </Box>
           <Box marginTop={1} gap={1} flexWrap="wrap">
-            <Button key="pp-fill" variant="primary" label={isEmpty ? 'Заполнить из проекта' : 'Дополнить из проекта'} onPress={() => void askClaude($, FILL_PROMPT)} />
-            <Button key="pp-sort" label="Разобрать с CLAUDE.md" onPress={() => void askClaude($, SORT_PROMPT)} />
+            <Button key="pp-fill" variant="primary" label={isEmpty ? 'Заполнить из проекта' : 'Дополнить из проекта'} onPress={() => void askClaude($, 'fill', FILL_PROMPT)} />
+            <Button key="pp-sort" label="Разобрать с CLAUDE.md" onPress={() => void askClaude($, 'sort', SORT_PROMPT)} />
           </Box>
+          {sent !== null && (
+            <Box marginTop={1}>
+              <Text color="success" wrap="wrap">
+                ✓ Передал Claude: {ASKED_WORDS[sent.what]}. Ответ будет в чате.
+              </Text>
+            </Box>
+          )}
         </Box>
 
         <Box marginTop={2} marginBottom={1} flexDirection="column">
