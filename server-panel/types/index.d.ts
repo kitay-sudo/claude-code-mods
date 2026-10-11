@@ -38,6 +38,34 @@ export type Run = {
   tail: string
 }
 
+/** One service of the project on the server: a container or a pm2 process. */
+export type Service = {
+  name: string
+  /** As its runtime says it: running, exited, restarting, online, stopped... */
+  state: string
+  /** pm2 restarts, when known. */
+  restarts: number | null
+}
+
+/** What runs the project on the server, as the health check found it. */
+export type Runtime = 'compose' | 'docker' | 'pm2' | 'none'
+
+/** The server's health from one read-only check. */
+export type Vitals = {
+  /** Load as a share of the processors, in %. */
+  cpu: number | null
+  memUsedMb: number | null
+  memTotalMb: number | null
+  diskPercent: number | null
+  diskFreeMb: number | null
+  runtime: Runtime
+  services: Service[]
+  /** The last error lines of the project's logs, newest last. */
+  errors: string[]
+  /** The project folder is not on the server. */
+  isDirMissing: boolean
+}
+
 /** What the last connection check found. */
 export type Health = {
   state: 'unknown' | 'checking' | 'ok' | 'fail'
@@ -46,6 +74,8 @@ export type Health = {
   /** How long the login took, in ms. */
   ms: number | null
   note: string
+  /** The machine, the services and the log errors, from the last check that got in. */
+  vitals?: Vitals
 }
 
 /** The connect assistant's progress for one server. */

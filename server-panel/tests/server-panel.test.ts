@@ -36,7 +36,13 @@ function world(on: On, kept: Record<string, unknown> = {}) {
   mock.store(on, kept)
   const asked: string[] = []
   const ran: (readonly string[])[] = []
-  const sim = { reply: 'Выполнить', defaultKey: true, pluginKey: false, keyExists: false }
+  const sim = { reply: 'Выполнить', defaultKey: true, pluginKey: false, keyExists: false, vitals: '' }
+  const submitted: string[] = []
+  const toasts: string[] = []
+  on('prompt.submit', ($, e) => {
+    submitted.push(e.text)
+    return { text: e.text }
+  })
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('session.cwd', () => ({ value: 'C:\\proj' }))
   on('env.get', ($, e) => ({ value: e.name === 'USERPROFILE' ? 'C:\\Users\\me' : undefined }))
@@ -44,7 +50,10 @@ function world(on: On, kept: Record<string, unknown> = {}) {
   on('command.register', ($, e) => ({ value: { command: e.name } }))
   on('tool.register', ($, e) => ({ value: { tool: `mcp__server-panel__${e.name}` } }))
   on('ui.open', () => ({ value: { isPlaced: true as const } }))
-  on('ui.toast', () => ({ value: undefined }))
+  on('ui.toast', ($, e) => {
+    toasts.push(e.text)
+    return { value: undefined }
+  })
   on('ui.render', { component: 'AbovePrompt' }, () => ({ type: 'Box' }))
   on('prompt.context', ($, e) => ({ blocks: e.blocks }))
   // $.ui.ask asks through the AskUserQuestion tool's call.
@@ -68,12 +77,18 @@ function world(on: On, kept: Record<string, unknown> = {}) {
     }
     const isIn = argv.includes('-i') ? sim.pluginKey : sim.defaultKey
     if (!isIn) return result(255, '', 'root@1.2.3.4: Permission denied (publickey,password).')
+    // The read-only health check answers with what the test set.
+    if (isVitals(argv)) return result(0, sim.vitals)
     return result(0, argv.at(-1) === 'true' ? '' : 'ok\n')
   })
-  return { clock, asked, ran, sim }
+  return { clock, asked, ran, sim, submitted, toasts }
 }
 
-const commands = (ran: (readonly string[])[]) => ran.filter(argv => argv[0] === 'ssh' && argv.at(-1) !== 'true').map(argv => argv.at(-1))
+const isVitals = (argv: readonly string[]) => String(argv.at(-1)).startsWith('sh -c ')
+
+// The commands run on a server, the connection and health checks left out.
+const commands = (ran: (readonly string[])[]) =>
+  ran.filter(argv => argv[0] === 'ssh' && argv.at(-1) !== 'true' && !isVitals(argv)).map(argv => argv.at(-1))
 
 test('a server is saved after «Сохранить», then the model runs commands on it after «Выполнить»', async ($, on) => {
   const { clock, asked, ran, sim } = world(on)
@@ -268,4 +283,32 @@ test('nothing sticks together: a blank row under headings and labels, settings o
   // The field sits a row under its label; the next label two rows under the hint.
   expect(boxAround(tree, 'пользователь@адрес, порт через двоеточие: root@1.2.3.4:2222')?.props?.marginTop).toBe(1)
   expect(boxAround(tree, 'Папка проекта на сервере')?.props?.marginTop).toBe(2)
+})
+
+test('the card shows the server\'s health, the band its worst problem, and the errors go to Claude in one press', async ($, on) => {
+  const { clock, ran, sim, submitted, toasts } = world(on, { [STORE_KEY]: { servers: [PROD], settings: { confirm: 'every', band: true } } })
+  sim.vitals = 'load=0.5\ncpus=2\nmem=1229/3891\ndisk=41/12000\nkind=compose\nsvc=web|running|\nsvc=worker|running|\nerr=ERROR connection refused to db:5432\n'
+  await $.session.start({ cwd: 'C:\\proj', surface: 'desktop', isInteractive: true })
+  await clock.settle()
+  const pane = await $.ui.mount({ plugin: 'server-panel', surface: 'desktop', component: 'Pane', requestId: 'server-panel', props: PANE })
+  let shown = (await pane.findAll({ type: 'Text' })).map(found => found.text)
+  for (const one of ['СОСТОЯНИЕ · Docker Compose', 'процессор 25% · память 1,2 ГБ из 3,8 ГБ', 'web', 'работает', 'ОШИБКИ В ЛОГАХ · 1', 'ERROR connection refused to db:5432']) {
+    expect(shown).toContain(one)
+  }
+
+  // A service that stops between checks: a toast once, red in the card and in the band.
+  sim.vitals = sim.vitals.replace('svc=worker|running|', 'svc=worker|exited|')
+  await pane.press({ key: 'refresh-prod' })
+  expect(toasts).toContain('prod: worker: остановлен')
+  shown = (await pane.findAll({ type: 'Text' })).map(found => found.text)
+  expect(shown).toContain('⚠ worker: остановлен')
+  const band = await $.ui.mount({ plugin: 'server-panel', surface: 'desktop', component: 'AbovePrompt', props: BAND })
+  expect(await band.find({ type: 'Text', text: '⚠ worker: остановлен' })).toBeDefined()
+
+  // The logs land in the journal; the errors reach Claude as the person's request.
+  await pane.press({ key: 'logs-prod' })
+  expect(commands(ran)).toContain("cd ~/'app' && docker compose logs --tail 60 --no-color 2>&1")
+  await pane.press({ key: 'analyze-prod' })
+  expect(submitted[0]).toContain('Разбери ошибки на сервере prod')
+  expect(submitted[0]).toContain('ERROR connection refused to db:5432')
 })

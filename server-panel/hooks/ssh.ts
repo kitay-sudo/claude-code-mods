@@ -66,7 +66,7 @@ export function quote(text: string): string {
   return `'${text.replace(/'/g, `'\\''`)}'`
 }
 
-function cdInto(dir: string): string {
+export function cdInto(dir: string): string {
   if (dir === '~') return 'cd ~'
   // The home part stays bare so the remote shell expands it.
   if (dir.startsWith('~/')) return `cd ~/${quote(dir.slice(2))}`

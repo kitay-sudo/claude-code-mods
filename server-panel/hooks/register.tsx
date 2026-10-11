@@ -17,7 +17,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderElement, Timer } from 'claude-code'
 
-import type { Draft, Health, PanelSettings, Run, Server } from '../types'
+import type { Draft, Health, PanelSettings, Run, Server, Vitals } from '../types'
 import {
   address,
   checkServer,
@@ -34,6 +34,7 @@ import {
   tailOf,
 } from './ssh'
 import { joinRow } from './status-row'
+import { alerts, isUp, logsCommand, machineLines, parseVitals, runtimeName, shownServices, stateWord, vitalsArgs } from './vitals'
 
 const PANE = 'server-panel'
 const PANE_TITLE = 'Сервер-пульт'
@@ -50,6 +51,8 @@ const SETUP_POLL_MS = 4_000
 const SETUP_POLL_TRIES = 45
 const KEY_NAME = 'server_panel_ed25519'
 const CHECK_COMMAND = 'echo "связь есть: $(hostname)" && uptime'
+const LOG_LINES_SHOWN = 60
+const ERRORS_SHOWN = 3
 
 const DEFAULT_SETTINGS: PanelSettings = { confirm: 'every', band: true }
 const EMPTY_DRAFT: Draft = { address: '', dir: '', deploy: '', error: '' }
@@ -118,6 +121,8 @@ function briefing(list: readonly Server[], mode: PanelSettings): string {
     'Whenever a request touches the live project (the site is down, an error on the server, logs, what is deployed, ' +
     'data in the database, disk, services, containers), go to the server on your own initiative and check, ' +
     'instead of guessing or asking the user to run commands and paste the output. ' +
+    'Logs by what runs the project: docker compose logs --tail 200 (Docker Compose, in the project folder), ' +
+    'docker logs --tail 200 <container> (Docker), pm2 logs --nostream --lines 200 (pm2), journalctl -u <service> -n 200 (systemd). ' +
     `${mode.confirm === 'every' ? 'The user confirms each command with a button.' : 'Safe commands run at once; the user confirms only risky ones (deleting, restarts, database changes, firewall).'} ` +
     saving
   const lines = list.map(
@@ -237,8 +242,11 @@ async function execute($: EngineInterface, server: Server, command: string, by: 
       tail: hint ?? tailOf(`${ran.stdout}\n${ran.stderr}`),
     })
     const now = await $.clock.now()
-    if (ran.exitCode !== 255) await setHealth($, server.name, { state: 'ok', at: now, ms: null, note: '' })
-    else await setHealth($, server.name, { state: 'fail', at: now, ms: null, note: hint ?? tailOf(ran.stderr, 2) })
+    // A command says whether ssh got in; what the last check read stays.
+    const before = (await read($, health))[server.name]
+    const kept = before?.vitals === undefined ? {} : { vitals: before.vitals }
+    if (ran.exitCode !== 255) await setHealth($, server.name, { state: 'ok', at: now, ms: before?.ms ?? null, note: '', ...kept })
+    else await setHealth($, server.name, { state: 'fail', at: now, ms: null, note: hint ?? tailOf(ran.stderr, 2), ...kept })
     const output = formatOutput(ran.exitCode, ran.stdout, ran.stderr)
     return hint === undefined ? output : `${output}\n\n${hint}`
   } catch (error) {
@@ -261,9 +269,59 @@ async function probe($: EngineInterface, server: Server): Promise<{ isOk: boolea
 
 async function checkHealth($: EngineInterface, server: Server): Promise<void> {
   const before = (await read($, health))[server.name]
-  await setHealth($, server.name, { state: 'checking', at: before?.at ?? null, ms: before?.ms ?? null, note: '' })
+  const kept = before?.vitals === undefined ? {} : { vitals: before.vitals }
+  await setHealth($, server.name, { state: 'checking', at: before?.at ?? null, ms: before?.ms ?? null, note: '', ...kept })
   const result = await probe($, server)
-  await setHealth($, server.name, { state: result.isOk ? 'ok' : 'fail', at: await $.clock.now(), ms: result.ms, note: result.note })
+  const at = await $.clock.now()
+  if (!result.isOk) {
+    await setHealth($, server.name, { state: 'fail', at, ms: result.ms, note: result.note, ...kept })
+    return
+  }
+  const vitals = await readVitals($, server)
+  await setHealth($, server.name, { state: 'ok', at, ms: result.ms, note: '', ...(vitals === null ? kept : { vitals }) })
+  // A problem new since the last check reaches the person once.
+  if (vitals !== null && before?.vitals !== undefined) {
+    const known = new Set(alerts(before.vitals))
+    for (const alert of alerts(vitals)) if (!known.has(alert)) $.ui.toast(`${server.name}: ${alert}`)
+  }
+}
+
+/** The machine, the services and the log errors, in one read-only call; null when it did not get through. */
+async function readVitals($: EngineInterface, server: Server): Promise<Vitals | null> {
+  try {
+    const ran = await $.process.run(vitalsArgs(server), { timeoutMs: 30_000 })
+    return ran.exitCode === 0 ? parseVitals(ran.stdout) : null
+  } catch {
+    return null
+  }
+}
+
+async function personRefresh($: EngineInterface, name: string): Promise<void> {
+  const server = (await read($, servers)).find(one => one.name === name)
+  if (server !== undefined) await checkHealth($, server)
+}
+
+/** The project's recent logs, run as the person's command so they land in the journal and reach the model. */
+async function personLogs($: EngineInterface, name: string): Promise<void> {
+  const server = (await read($, servers)).find(one => one.name === name)
+  if (server === undefined) return
+  const runtime = (await read($, health))[name]?.vitals?.runtime ?? 'none'
+  const output = await execute($, server, logsCommand(runtime, LOG_LINES_SHOWN), 'person', 60)
+  await tell($, `Пользователь открыл логи ${server.name}.\n${output}`)
+}
+
+/** The errors handed to Claude as the person's own request. */
+async function analyzeErrors($: EngineInterface, name: string): Promise<void> {
+  const vitals = (await read($, health))[name]?.vitals
+  if (vitals === undefined) return
+  const text =
+    `Разбери ошибки на сервере ${name}. Зайди на сервер сам, посмотри логи (${runtimeName(vitals.runtime)}) и скажи, ` +
+    `что сломалось и как починить. Последние строки с ошибками:\n${vitals.errors.join('\n')}`
+  try {
+    await $.prompt.submit({ text, asUser: true })
+  } catch (error) {
+    $.ui.toast(`Не удалось передать Claude: ${String(error)}`)
+  }
 }
 
 async function checkAll($: EngineInterface): Promise<void> {
@@ -621,19 +679,26 @@ export const register: Register = on => {
           ? ' · деплой идёт…'
           : ` · деплой ${clock(lastDeploy.at)} ${lastDeploy.status === 'done' ? '✓' : lastDeploy.status === 'failed' ? '✗' : '–'}`
     const isDeploying = lastDeploy?.status === 'running'
+    const problems = state?.vitals === undefined ? [] : alerts(state.vitals)
 
     // In the shared row the address stays in the pane: name, state, last deploy.
     return joinRow(
       below,
       <Box key="seg-2-server" gap={1}>
         <Text {...dot.look}>{dot.mark}</Text>
-        <Text bold>{server.name}</Text>
+        <Text>{server.name}</Text>
         <Text dimColor>
           {status}
           {deployText}
           {server.deployMode === 'after-push' ? ' · авто-деплой' : ''}
           {list.length > 1 ? ` · ещё ${list.length - 1}` : ''}
         </Text>
+        {problems.length > 0 && (
+          <Text color="error">
+            ⚠ {problems[0]}
+            {problems.length > 1 ? ` · ещё ${problems.length - 1}` : ''}
+          </Text>
+        )}
         {waiting === `${server.name}:deploy` ? (
           <Box gap={1}>
             <Text color="warning">Деплой на {server.name}?</Text>
@@ -768,6 +833,52 @@ export const register: Register = on => {
                 <Text color="error" wrap="wrap">
                   {state.note}
                 </Text>
+              )}
+
+              {state?.vitals !== undefined && (
+                <Box marginTop={2} flexDirection="column">
+                  {heading(`h-state-${server.name}`, `СОСТОЯНИЕ · ${runtimeName(state.vitals.runtime)}`)}
+                  {machineLines(state.vitals).map(line => (
+                    <Text key={`m-${line}`}>{line}</Text>
+                  ))}
+                  {shownServices(state.vitals).length > 0 && (
+                    <Box marginTop={1} flexDirection="column">
+                      {shownServices(state.vitals).map(service => (
+                        <Box key={`svc-${server.name}-${service.name}`} gap={1}>
+                          <Text {...(isUp(service) ? { color: 'success' } : { color: 'error' })}>●</Text>
+                          <Text>{service.name}</Text>
+                          <Text dimColor>{stateWord(service)}</Text>
+                        </Box>
+                      ))}
+                    </Box>
+                  )}
+                  {alerts(state.vitals).length > 0 && (
+                    <Box marginTop={1} flexDirection="column">
+                      {alerts(state.vitals).map(alert => (
+                        <Text key={`a-${alert}`} color="error" wrap="wrap">
+                          ⚠ {alert}
+                        </Text>
+                      ))}
+                    </Box>
+                  )}
+                  <Box marginTop={2} flexDirection="column">
+                    {heading(`h-errors-${server.name}`, state.vitals.errors.length === 0 ? 'ОШИБКИ В ЛОГАХ · нет' : `ОШИБКИ В ЛОГАХ · ${state.vitals.errors.length}`)}
+                    {state.vitals.errors.slice(-ERRORS_SHOWN).map((line, index) => (
+                      <Box key={`e-${server.name}-${index}`} {...(index > 0 ? { marginTop: 1 } : {})}>
+                        <Text dimColor wrap="wrap">
+                          {line}
+                        </Text>
+                      </Box>
+                    ))}
+                    <Box marginTop={1} gap={1} flexWrap="wrap">
+                      {state.vitals.errors.length > 0 && (
+                        <Button key={`analyze-${server.name}`} label="Разобрать ошибки" onPress={() => void analyzeErrors($, server.name)} />
+                      )}
+                      <Button key={`logs-${server.name}`} label="Логи" onPress={() => void personLogs($, server.name)} />
+                      <Button key={`refresh-${server.name}`} label="Обновить" onPress={() => void personRefresh($, server.name)} />
+                    </Box>
+                  </Box>
+                </Box>
               )}
 
               {server.deploy !== undefined && (
