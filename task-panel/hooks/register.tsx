@@ -423,12 +423,9 @@ export const register: Register = on => {
         {total > 0 && (
           <Box marginTop={1} flexDirection="column">
             {current.steps.map((step, index) => {
-              const look =
-                step.status === 'completed'
-                  ? { color: 'success' }
-                  : step.status === 'in_progress'
-                    ? { color: 'claude' }
-                    : { dimColor: true }
+              // A done step goes grey with its tick green; the one at work in the accent colour.
+              const look = step.status === 'in_progress' ? { color: 'claude' } : { dimColor: true }
+              const markLook = step.status === 'completed' ? { color: 'success' } : look
               return (
                 <Box key={step.id}>
                   <Box width={NUMERAL_WIDTH} flexShrink={0}>
@@ -440,7 +437,7 @@ export const register: Register = on => {
                     </Text>
                   </Box>
                   <Box width={2} flexShrink={0} justifyContent="flex-end">
-                    <Text {...look}>{step.status === 'completed' ? '✓' : step.status === 'in_progress' ? '←' : ' '}</Text>
+                    <Text {...markLook}>{step.status === 'completed' ? '✓' : step.status === 'in_progress' ? '←' : ' '}</Text>
                   </Box>
                 </Box>
               )

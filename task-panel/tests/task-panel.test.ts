@@ -94,6 +94,10 @@ test('a request opens the panel, the todo list fills it, and all done turns it g
   expect((await ui.find({ type: 'Text', text: '100 %' }))?.props.color).toBe('success')
   expect((await ui.find({ type: 'Text', text: '🪴 ВСЁ ГОТОВО ЗА 12 МИН' }))?.props.color).toBe('success')
   expect(await ui.find({ type: 'Text', text: 'ВСЕ ЭТАПЫ ВЫПОЛНЕНЫ · III' })).toBeDefined()
+  // Done steps go grey, their ticks stay green.
+  expect((await ui.find({ type: 'Text', text: 'Исправить' }))?.props.dimColor).toBe(true)
+  expect((await ui.find({ type: 'Text', text: 'II.' }))?.props.dimColor).toBe(true)
+  expect((await ui.findAll({ type: 'Text', text: '✓' })).map(found => found.props.color)).toEqual(['success', 'success', 'success'])
   // Nothing on the panel is bold.
   expect((await ui.findAll({ type: 'Text' })).filter(found => found.props.bold === true)).toEqual([])
 })

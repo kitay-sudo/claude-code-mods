@@ -676,22 +676,32 @@ export const register: Register = on => {
     const latest = history.at(-1)
     const width = Math.max(24, e.props.bodyColumns - 4)
 
+    // A field: its label, a blank row, the field with its hint under it; two rows to the next.
     const field = (key: 'address' | 'dir' | 'deploy', title: string, placeholder: string, hint: string, onSubmit: (value: string) => void) =>
       Input === undefined ? null : (
-        <Box key={`field-${key}`} flexDirection="column" marginTop={1}>
+        <Box key={`field-${key}`} flexDirection="column" {...(key === 'address' ? {} : { marginTop: 2 })}>
           <Text>{title}</Text>
-          <Input
-            key={`sp-${key}`}
-            placeholder={placeholder}
-            value={form[key]}
-            onInput={value => void editDraft($, key, value)}
-            onSubmit={value => onSubmit(value)}
-          />
-          <Text dimColor wrap="wrap">
-            {hint}
-          </Text>
+          <Box marginTop={1} flexDirection="column">
+            <Input
+              key={`sp-${key}`}
+              placeholder={placeholder}
+              value={form[key]}
+              onInput={value => void editDraft($, key, value)}
+              onSubmit={value => onSubmit(value)}
+            />
+            <Text dimColor wrap="wrap">
+              {hint}
+            </Text>
+          </Box>
         </Box>
       )
+
+    // A section's heading with a blank row under it.
+    const heading = (key: string, text: string) => (
+      <Box key={key} marginBottom={1}>
+        <Text dimColor>{text}</Text>
+      </Box>
+    )
 
     return (
       <Box flexDirection="column">
@@ -708,16 +718,16 @@ export const register: Register = on => {
           </Box>
         )}
 
-        <Text dimColor>{list.length > 1 ? 'СЕРВЕРЫ ПРОЕКТА' : 'СЕРВЕР ПРОЕКТА'}</Text>
+        {heading('h-servers', list.length > 1 ? 'СЕРВЕРЫ ПРОЕКТА' : 'СЕРВЕР ПРОЕКТА')}
         {list.length === 0 && (
-          <Box marginTop={1}>
+          <Box>
             <Text wrap="wrap">
               Пока нет ни одного. Добавь сервер, и Claude сможет сам заходить на него, проверять и деплоить. Пароль спросят один раз в отдельном окне, его не видит ни пульт, ни Claude.
             </Text>
           </Box>
         )}
 
-        {list.map(server => {
+        {list.map((server, index) => {
           const state = states[server.name]
           const isBusy = history.some(run => run.server === server.name && run.status === 'running')
           const look = state?.state === 'ok' ? { color: 'success' } : state?.state === 'fail' ? { color: 'error' } : { dimColor: true }
@@ -741,7 +751,7 @@ export const register: Register = on => {
             .filter(part => part !== '')
             .join(' · ')
           return (
-            <Box key={`srv-${server.name}`} marginTop={1} flexDirection="column">
+            <Box key={`srv-${server.name}`} flexDirection="column" {...(index > 0 ? { marginTop: 2 } : {})}>
               <Box justifyContent="space-between">
                 <Box gap={1}>
                   <Text {...look}>●</Text>
@@ -761,14 +771,14 @@ export const register: Register = on => {
               )}
 
               {server.deploy !== undefined && (
-                <Box marginTop={1} flexDirection="column">
-                  <Text dimColor>ДЕПЛОЙ</Text>
+                <Box marginTop={2} flexDirection="column">
+                  {heading(`h-deploy-${server.name}`, 'ДЕПЛОЙ')}
                   <Text wrap="wrap">{server.deploy}</Text>
                   <Text dimColor>{deployState}</Text>
                 </Box>
               )}
 
-              <Box marginTop={1} flexDirection="column">
+              <Box marginTop={2} flexDirection="column">
                 {isBusy ? (
                   <Text color="claude">выполняется…</Text>
                 ) : waiting === `${server.name}:deploy` ? (
@@ -805,7 +815,7 @@ export const register: Register = on => {
                       )}
                       <Button key={`check-${server.name}`} label="Проверить связь" onPress={() => void personCheck($, server.name)} />
                     </Box>
-                    <Box gap={2} flexWrap="wrap">
+                    <Box marginTop={1} gap={2} flexWrap="wrap">
                       {server.deploy !== undefined && (
                         <Button
                           key={`mode-${server.name}`}
@@ -824,8 +834,8 @@ export const register: Register = on => {
         })}
 
         {Input !== undefined && isAdding && (
-          <Box marginTop={1} flexDirection="column">
-            {list.length > 0 && <Text dimColor>НОВЫЙ СЕРВЕР</Text>}
+          <Box marginTop={2} flexDirection="column">
+            {list.length > 0 && heading('h-new', 'НОВЫЙ СЕРВЕР')}
             {field('address', 'Адрес для ssh', 'root@1.2.3.4', 'пользователь@адрес, порт через двоеточие: root@1.2.3.4:2222', value =>
               void editDraft($, 'address', value).then(() => saveFromForm($)),
             )}
@@ -840,33 +850,33 @@ export const register: Register = on => {
                 </Text>
               </Box>
             )}
-            <Box marginTop={1} gap={1}>
+            <Box marginTop={2} gap={1}>
               <Button key="sp-save" variant="primary" label="Сохранить и подключить" onPress={() => void saveFromForm($)} />
               {list.length > 0 && <Button key="sp-cancel" label="Отмена" onPress={() => void stopAdding($)} />}
             </Box>
           </Box>
         )}
         {Input !== undefined && !isAdding && (
-          <Box marginTop={1}>
+          <Box marginTop={2}>
             <Button key="sp-add" plain label="+ Добавить сервер" onPress={() => void update($, adding, () => true)} />
           </Box>
         )}
 
-        <Box marginTop={1} flexDirection="column">
-          <Text dimColor>НАСТРОЙКИ</Text>
+        <Box marginTop={2} flexDirection="column">
+          {heading('h-settings', 'НАСТРОЙКИ')}
           <Box justifyContent="space-between">
             <Text>Подтверждать команды Claude</Text>
             <Button key="sp-confirm" label={mode.confirm === 'every' ? 'каждую' : 'только опасные'} onPress={() => void toggleConfirm($)} />
           </Box>
-          <Box justifyContent="space-between">
+          <Box marginTop={1} justifyContent="space-between">
             <Text>Строка над полем ввода</Text>
             <Button key="sp-band" label={mode.band ? 'видна' : 'скрыта'} onPress={() => void toggleBand($)} />
           </Box>
         </Box>
 
         {recent.length > 0 && (
-          <Box marginTop={1} flexDirection="column">
-            <Text dimColor>ЖУРНАЛ</Text>
+          <Box marginTop={2} flexDirection="column">
+            {heading('h-journal', 'ЖУРНАЛ')}
             {recent.map((run, index) => {
               const look =
                 run.status === 'done'
@@ -895,8 +905,8 @@ export const register: Register = on => {
               )
             })}
             {latest !== undefined && latest.tail !== '' && (
-              <Box marginTop={1} flexDirection="column">
-                <Text dimColor>ВЫВОД ПОСЛЕДНЕЙ КОМАНДЫ</Text>
+              <Box marginTop={2} flexDirection="column">
+                {heading('h-output', 'ВЫВОД ПОСЛЕДНЕЙ КОМАНДЫ')}
                 <Text dimColor wrap="wrap">
                   {latest.tail}
                 </Text>

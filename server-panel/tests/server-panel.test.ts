@@ -242,3 +242,30 @@ test('a kept server is a card, the form folds behind one button, the journal tak
   // Nothing on the pane is bold.
   expect((await pane.findAll({ type: 'Text' })).filter(found => found.props.bold === true)).toEqual([])
 })
+
+test('nothing sticks together: a blank row under headings and labels, settings one row apart', async ($, on) => {
+  world(on)
+  await $.session.start({ cwd: 'C:\\proj', surface: 'desktop', isInteractive: true })
+  const pane = await $.ui.mount({ plugin: 'server-panel', surface: 'desktop', component: 'Pane', requestId: 'server-panel', props: PANE })
+  type Node = { type?: string; props?: Record<string, unknown>; children?: unknown[] }
+  const textOf = (node: unknown): string =>
+    typeof node === 'string' ? node : ((node as Node)?.children ?? []).map(textOf).join('')
+  // The Box that holds a Text with this text among its own children.
+  const boxAround = (node: unknown, text: string): Node | undefined => {
+    const box = node as Node
+    if (typeof node !== 'object' || node === null) return undefined
+    if (box.type === 'Box' && (box.children ?? []).some(child => (child as Node)?.type === 'Text' && textOf(child) === text)) return box
+    for (const child of box.children ?? []) {
+      const found = boxAround(child, text)
+      if (found !== undefined) return found
+    }
+    return undefined
+  }
+  const tree = await pane.drawn()
+  expect(boxAround(tree, 'СЕРВЕР ПРОЕКТА')?.props?.marginBottom).toBe(1)
+  expect(boxAround(tree, 'НАСТРОЙКИ')?.props?.marginBottom).toBe(1)
+  expect(boxAround(tree, 'Строка над полем ввода')?.props?.marginTop).toBe(1)
+  // The field sits a row under its label; the next label two rows under the hint.
+  expect(boxAround(tree, 'пользователь@адрес, порт через двоеточие: root@1.2.3.4:2222')?.props?.marginTop).toBe(1)
+  expect(boxAround(tree, 'Папка проекта на сервере')?.props?.marginTop).toBe(2)
+})
