@@ -158,17 +158,11 @@ test('the pane reads in sections: no long dashes, labels above the fields, setti
   expect((await pane.findAll({ type: 'Text' })).filter(found => found.props.bold === true)).toEqual([])
 })
 
-test('the passport and the task panel are two tabs at the top, each a press from the other', async ($, on) => {
+test('the passport starts with its heading: the app shows its own tabs above it', async ($, on) => {
   world(on)
-  const ran: string[] = []
-  on('command.run', ($, e) => {
-    ran.push(e.command)
-    return { text: `ran /${e.command}` }
-  })
   await $.session.start({ cwd: 'C:\\work\\acme-crm', surface: 'desktop', isInteractive: true })
   const pane = await $.ui.mount({ plugin: 'project-passport', surface: 'desktop', component: 'Pane', requestId: 'project-passport', props: PANE })
-  expect((await pane.find({ type: 'Button', key: 'tab-passport' }))?.props.variant).toBe('primary')
-  expect((await pane.find({ type: 'Button', key: 'tab-task' }))?.text).toBe('📋 Пульт')
-  await pane.press({ key: 'tab-task' })
-  expect(ran).toContain('task-panel')
+  expect(await pane.find({ type: 'Button', key: 'tab-task' })).toBeUndefined()
+  expect(await pane.find({ type: 'Button', key: 'tab-passport' })).toBeUndefined()
+  expect((await pane.findAll({ type: 'Text' }))[0]?.text).toBe('ПАСПОРТ ПРОЕКТА')
 })
