@@ -12,14 +12,22 @@
 // Prompts typed while Claude works wait in a queue shown at the top: each
 // leaves it when the model reads it, mid-turn after a step or as the turn it
 // starts.
+//
+// Below the task the project's backlog: what is left for later, kept between
+// chats. The model adds to it with its `backlog` tool, the person with the
+// field; "в работу" hands an item to Claude.
 
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, PromptOrigin, Register, RenderElement } from 'claude-code'
 
-import type { Queued, Step, Task } from '../types'
+import type { Backlog, Queued, Step, Task } from '../types'
 import {
+  addItems,
+  backlogBriefing,
   bar,
+  checkItem,
   currentStep,
+  emptyBacklog,
   formatElapsed,
   fromPlan,
   fromTaskList,
@@ -27,6 +35,8 @@ import {
   progress,
   queueHint,
   readiness,
+  removeItems,
+  restoreBacklog,
   roman,
   settle,
   startsTask,
@@ -39,6 +49,7 @@ import {
 const PANE = 'task-panel'
 const PANE_TITLE = 'Пульт задачи'
 const PLAN_TOOL = 'mcp__task-panel__plan'
+const BACKLOG_TOOL = 'mcp__task-panel__backlog'
 const TICK_MS = 20_000
 const NUMERAL_WIDTH = 7
 const QUEUE_SHOWN = 90
@@ -46,7 +57,7 @@ const QUEUE_SHOWN = 90
 // a queued prompt as soon as the session is idle.
 const STALE_QUEUE_MS = 15_000
 // Tools that keep the plan itself, not work on the task.
-const PLAN_TOOLS = new Set([PLAN_TOOL, 'TodoWrite', 'TaskCreate', 'TaskUpdate', 'TaskList', 'TaskGet'])
+const PLAN_TOOLS = new Set([PLAN_TOOL, BACKLOG_TOOL, 'TodoWrite', 'TaskCreate', 'TaskUpdate', 'TaskList', 'TaskGet'])
 // After this many actions without a plan the model is reminded, once a task.
 const NUDGE_AFTER = 4
 
@@ -96,6 +107,19 @@ const PLAN_SCHEMA = {
   required: ['steps'],
 }
 
+const BACKLOG_DESCRIPTION =
+  "Keeps the project's backlog in the Task panel: things to do later, kept between chats. Add items when the user " +
+  'says to do something later or next time, or when work is left over at the end of a task; mark items done by id ' +
+  "once they are finished. One short line per item, in the user's language."
+
+const BACKLOG_SCHEMA = {
+  type: 'object',
+  properties: {
+    add: { type: 'array', items: { type: 'string' }, description: 'New items, one short line each.' },
+    done: { type: 'array', items: { type: 'string' }, description: 'Ids of finished items, e.g. b3.' },
+  },
+}
+
 const task = atom({ plugin: 'task-panel', key: 'task' } as const, null)
 const now = atom({ plugin: 'task-panel', key: 'now' } as const, 0)
 const isWorking = atom({ plugin: 'task-panel', key: 'isWorking' } as const, false)
@@ -103,6 +127,8 @@ const queue = atom({ plugin: 'task-panel', key: 'queue' } as const, [] as Queued
 const idleSince = atom({ plugin: 'task-panel', key: 'idleSince' } as const, 0)
 const actions = atom({ plugin: 'task-panel', key: 'actions' } as const, 0)
 const nudged = atom({ plugin: 'task-panel', key: 'nudged' } as const, false)
+const backlog = atom({ plugin: 'task-panel', key: 'backlog' } as const, emptyBacklog() as Backlog)
+const backlogDraft = atom({ plugin: 'task-panel', key: 'backlogDraft' } as const, '')
 
 async function openPane($: EngineInterface): Promise<void> {
   await $.ui.open({ id: PANE, title: PANE_TITLE })
@@ -196,6 +222,49 @@ async function personSaid($: EngineInterface, text: string): Promise<void> {
   }
 }
 
+async function backlogKey($: EngineInterface): Promise<string> {
+  const cwd = await $.session.cwd()
+  return `backlog:${cwd.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()}`
+}
+
+async function loadBacklog($: EngineInterface): Promise<Backlog> {
+  const kept = restoreBacklog(await $.store.get(await backlogKey($)))
+  await update($, backlog, () => kept)
+  return kept
+}
+
+async function keepBacklog($: EngineInterface, next: Backlog): Promise<void> {
+  await $.store.set(await backlogKey($), next)
+  await update($, backlog, () => next)
+}
+
+async function personAddItem($: EngineInterface, text: string): Promise<void> {
+  const checked = checkItem(text)
+  if ('error' in checked) return
+  await keepBacklog($, addItems(await read($, backlog), [checked.text], await $.clock.now(), 'person'))
+  await update($, backlogDraft, () => '')
+}
+
+async function dropItem($: EngineInterface, id: string): Promise<void> {
+  await keepBacklog($, removeItems(await read($, backlog), [id]))
+}
+
+/** The item handed to Claude as the person's own request, and off the list. */
+async function takeItem($: EngineInterface, id: string): Promise<void> {
+  const item = (await read($, backlog)).items.find(one => one.id === id)
+  if (item === undefined) return
+  await dropItem($, id)
+  // The plugin's own prompt passes none of its own hooks: the task (or, while
+  // Claude works, its place in the queue) is set here. It runs once Claude is idle.
+  if (await read($, isWorking)) await enqueue($, item.text, true)
+  else await startTask($, titleOf(item.text), false)
+  try {
+    await $.prompt.submit({ text: item.text, asUser: true })
+  } catch (error) {
+    $.ui.toast(`Не удалось передать Claude: ${String(error)}`)
+  }
+}
+
 async function goalSet($: EngineInterface, condition: string): Promise<void> {
   const current = await read($, task)
   if (current !== null && current.finishedAt === null) {
@@ -210,6 +279,13 @@ export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'task-panel', description: 'Открыть пульт задачи: план, готовность и время' })
     await $.tool.register({ name: 'plan', description: PLAN_DESCRIPTION, inputSchema: PLAN_SCHEMA, isDeferred: false })
+    await $.tool.register({ name: 'backlog', description: BACKLOG_DESCRIPTION, inputSchema: BACKLOG_SCHEMA, isDeferred: false })
+    try {
+      // A project with things left for later opens with them in view.
+      if ((await loadBacklog($)).items.length > 0) void openPane($).catch(() => undefined)
+    } catch {
+      // No project to read from: the backlog starts empty.
+    }
     $.clock.every(TICK_MS, () => {
       tick($).catch(() => undefined)
     })
@@ -267,7 +343,8 @@ export const register: Register = on => {
 
   on('prompt.context', async ($, e, next) => {
     const context = await next(e)
-    return { ...context, blocks: [...context.blocks, { name: 'taskPanel', text: BRIEFING }] }
+    const text = `${BRIEFING}\n\n${backlogBriefing(await read($, backlog), BACKLOG_TOOL)}`
+    return { ...context, blocks: [...context.blocks, { name: 'taskPanel', text }] }
   })
 
   // Each action of the main thread counts; a long run without a plan gets one reminder.
@@ -277,6 +354,30 @@ export const register: Register = on => {
     const note = await counted($)
     return note === null ? result : { ...result, additionalContext: [...(result.additionalContext ?? []), note] }
   }).catch(($, e, next) => next(e))
+
+  on('tool.call', { tool: BACKLOG_TOOL }, async ($, e) => {
+    const input = e as unknown as { add?: unknown; done?: unknown }
+    const errors: string[] = []
+    const adds: string[] = []
+    for (const one of Array.isArray(input.add) ? input.add : []) {
+      const checked = checkItem(one)
+      if ('error' in checked) errors.push(`"${String(one).slice(0, 60)}": ${checked.error}`)
+      else adds.push(checked.text)
+    }
+    const current = await read($, backlog)
+    const ids = Array.isArray(input.done) ? input.done.map(String) : []
+    for (const id of ids) if (!current.items.some(item => item.id === id)) errors.push(`нет пункта ${id}`)
+    if (errors.length > 0) return { deny: `Бэклог не изменён: ${errors.join('; ')}.` }
+    if (adds.length === 0 && ids.length === 0) return { deny: 'Нечего менять: передай add или done.' }
+    const next = addItems(removeItems(current, ids), adds, await $.clock.now(), 'claude')
+    await keepBacklog($, next)
+    // What is new, an item already on the list not counted again.
+    const before = new Set(current.items.map(item => item.id))
+    const added = next.items.filter(item => !before.has(item.id)).map(item => `[${item.id}] ${item.text}`)
+    const change = [added.length > 0 ? `+${added.length}` : '', ids.length > 0 ? `готово ${ids.length}` : ''].filter(Boolean).join(', ')
+    if (change !== '') $.ui.toast(`Бэклог: ${change}`)
+    return { result: `Бэклог проекта: пунктов ${next.items.length}.${added.length > 0 ? ` Добавлено: ${added.join('; ')}.` : ''}` }
+  })
 
   on('tool.call', { tool: PLAN_TOOL }, async ($, e) => {
     const plan = fromPlan((e as { steps?: unknown }).steps)
@@ -329,8 +430,13 @@ export const register: Register = on => {
   }).catch(($, e, next) => next(e))
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e): Promise<RenderElement> => {
-    const { Box, Text } = $.ui.resolve(e)
+    const elements = $.ui.resolve(e)
+    const { Box, Text, Button } = elements
+    // A surface without text fields (mobile) adds to the backlog through the chat.
+    const Input = 'Input' in elements ? elements.Input : undefined
     const current = await read($, task)
+    const later = await read($, backlog)
+    const draft = await read($, backlogDraft)
     const at = await read($, now)
     const working = await read($, isWorking)
     const waiting = await read($, queue)
@@ -364,6 +470,47 @@ export const register: Register = on => {
         </Box>
       ) : null
 
+    // What is left for later in this project, below everything else.
+    const backlogBlock = (
+      <Box key="backlog" flexDirection="column" marginTop={2}>
+        <Box marginBottom={1}>
+          <Text dimColor>{later.items.length === 0 ? 'БЭКЛОГ ПРОЕКТА · пусто' : `БЭКЛОГ ПРОЕКТА · ${later.items.length}`}</Text>
+        </Box>
+        {later.items.length === 0 && (
+          <Text dimColor wrap="wrap">
+            Скажи Claude "сделаем потом", и пункт появится здесь.
+          </Text>
+        )}
+        {later.items.map((item, index) => (
+          <Box key={item.id} flexDirection="column" {...(index > 0 ? { marginTop: 1 } : {})}>
+            <Box>
+              <Box width={NUMERAL_WIDTH} flexShrink={0}>
+                <Text dimColor>{index + 1}.</Text>
+              </Box>
+              <Box flexGrow={1}>
+                <Text wrap="wrap">{item.text}</Text>
+              </Box>
+            </Box>
+            <Box marginLeft={NUMERAL_WIDTH} gap={2}>
+              <Button key={`take-${item.id}`} plain label="в работу" onPress={() => void takeItem($, item.id)} />
+              <Button key={`drop-${item.id}`} plain label="убрать" onPress={() => void dropItem($, item.id)} />
+            </Box>
+          </Box>
+        ))}
+        {Input !== undefined && (
+          <Box marginTop={1}>
+            <Input
+              key="backlog-add"
+              placeholder="Добавить на потом"
+              value={draft}
+              onInput={value => void update($, backlogDraft, () => value)}
+              onSubmit={value => void personAddItem($, value)}
+            />
+          </Box>
+        )}
+      </Box>
+    )
+
     if (current === null) {
       return (
         <Box flexDirection="column">
@@ -375,6 +522,7 @@ export const register: Register = on => {
               Напиши, что сделать, или поставь цель через /goal.
             </Text>
           </Box>
+          {backlogBlock}
         </Box>
       )
     }
@@ -449,6 +597,7 @@ export const register: Register = on => {
             {mode}
           </Text>
         </Box>
+        {backlogBlock}
       </Box>
     )
   })

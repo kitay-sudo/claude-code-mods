@@ -28,6 +28,21 @@ export type Queued = {
   wait: boolean
 }
 
+/** One thing to do later in this project, kept between chats. */
+export type BacklogItem = {
+  id: string
+  text: string
+  /** When it was added, in `$.clock.now()` ms. */
+  at: number
+  by: 'person' | 'claude'
+}
+
+/** The project's backlog: its items, and the number the next id takes. */
+export type Backlog = {
+  items: BacklogItem[]
+  next: number
+}
+
 declare module 'claude-code' {
   interface PluginState {
     'task-panel': {
@@ -43,6 +58,10 @@ declare module 'claude-code' {
       actions: number
       /** Whether the model was reminded to plan this task. */
       nudged: boolean
+      /** This project's backlog. */
+      backlog: Backlog
+      /** What the person is typing into the backlog field. */
+      backlogDraft: string
     }
   }
 }

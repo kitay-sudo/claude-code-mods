@@ -268,3 +268,50 @@ test('a long run without a plan counts its actions and reminds the model to plan
   expect(await ui.find({ type: 'Text', text: '50 %' })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: 'ЭТАП II ИЗ II' })).toBeDefined()
 })
+
+test('the project backlog outlives the chat: Claude and the person add to it, "в работу" hands an item to Claude', async ($, on) => {
+  const { opened } = world(on)
+  const kept: Record<string, unknown> = {
+    'backlog:c:/work/shop': { items: [{ id: 'b1', text: 'Экспорт заказов в Excel', at: 1, by: 'person' }], next: 2 },
+  }
+  mock.store(on, kept)
+  const toasts: string[] = []
+  on('session.cwd', () => ({ value: 'C:\\work\\shop' }))
+  on('prompt.context', ($, e) => ({ blocks: e.blocks }))
+  on('ui.toast', ($, e) => {
+    toasts.push(e.text)
+    return { value: undefined }
+  })
+  await $.session.start({ cwd: 'C:\\work\\shop', surface: 'desktop', isInteractive: true })
+
+  // A project with something left opens the panel, and the model reads the list.
+  expect(opened).toEqual(['task-panel'])
+  const context = (await $.prompt.context({ blocks: [] })).blocks.find(block => block.name === 'taskPanel')?.text ?? ''
+  expect(context).toContain('- [b1] Экспорт заказов в Excel')
+  expect(context).toContain('add it with mcp__task-panel__backlog')
+
+  const added = await $.tool.call({ tool: 'mcp__task-panel__backlog', add: ['Починить  вёрстку на телефоне', 'экспорт заказов в excel'] })
+  expect(added.result).toBe('Бэклог проекта: пунктов 2. Добавлено: [b2] Починить вёрстку на телефоне.')
+  expect(toasts).toEqual(['Бэклог: +1'])
+  expect((await $.tool.call({ tool: 'mcp__task-panel__backlog', done: ['b9'] })).deny).toContain('нет пункта b9')
+
+  const ui = await mountPane($, 'desktop')
+  const shown = (await ui.findAll({ type: 'Text' })).map(found => found.text)
+  for (const one of ['БЭКЛОГ ПРОЕКТА · 2', 'Экспорт заказов в Excel', 'Починить вёрстку на телефоне']) expect(shown).toContain(one)
+
+  await ui.input({ key: 'backlog-add', text: 'Подключить оплату картой', kind: 'submit' })
+  expect(await ui.find({ type: 'Text', text: 'Подключить оплату картой' })).toBeDefined()
+
+  // "в работу": the item leaves the list and becomes the task.
+  await ui.press({ key: 'take-b2' })
+  expect(await ui.find({ type: 'Text', text: '«Починить вёрстку на телефоне»' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: 'БЭКЛОГ ПРОЕКТА · 2' })).toBeDefined()
+
+  await ui.press({ key: 'drop-b1' })
+  await $.tool.call({ tool: 'mcp__task-panel__backlog', done: ['b3'] })
+  expect(await ui.find({ type: 'Text', text: 'БЭКЛОГ ПРОЕКТА · пусто' })).toBeDefined()
+  // Kept for the project: a new chat reads the empty list.
+  await $.session.start({ cwd: 'C:\\work\\shop', surface: 'desktop', isInteractive: true })
+  const fresh = (await $.prompt.context({ blocks: [] })).blocks.find(block => block.name === 'taskPanel')?.text ?? ''
+  expect(fresh).toContain("The project's backlog in the Task panel is empty.")
+})

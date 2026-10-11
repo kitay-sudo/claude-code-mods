@@ -1,8 +1,61 @@
 // The task's plan and clock as plain data: no `$`, so tests read it directly.
 
-import type { Queued, Step, StepStatus, Task } from '../types'
+import type { Backlog, BacklogItem, Queued, Step, StepStatus, Task } from '../types'
 
 const TITLE_MAX = 160
+const ITEM_MAX = 300
+const ITEMS_KEPT = 50
+
+export function emptyBacklog(): Backlog {
+  return { items: [], next: 1 }
+}
+
+/** An item's text as kept: one line, trimmed; or why it cannot be. */
+export function checkItem(text: unknown): { text: string } | { error: string } {
+  if (typeof text !== 'string') return { error: 'нужен текст' }
+  const line = text.replace(/\s+/g, ' ').trim()
+  if (line === '') return { error: 'пустой пункт' }
+  if (line.length > ITEM_MAX) return { error: `длиннее ${ITEM_MAX} символов` }
+  return { text: line }
+}
+
+/** The backlog with these items added, the ones already there not twice, the oldest dropped past the limit. */
+export function addItems(backlog: Backlog, texts: readonly string[], at: number, by: BacklogItem['by']): Backlog {
+  let { items, next } = backlog
+  for (const text of texts) {
+    if (items.some(item => item.text.toLowerCase() === text.toLowerCase())) continue
+    items = [...items, { id: `b${next}`, text, at, by }]
+    next++
+  }
+  return { items: items.slice(-ITEMS_KEPT), next }
+}
+
+export function removeItems(backlog: Backlog, ids: readonly string[]): Backlog {
+  return { ...backlog, items: backlog.items.filter(item => !ids.includes(item.id)) }
+}
+
+/** A backlog read back from the store, anything malformed left out. */
+export function restoreBacklog(raw: unknown): Backlog {
+  const kept = (raw ?? {}) as Partial<Backlog>
+  const items = (Array.isArray(kept.items) ? kept.items : []).flatMap(item => {
+    const one = item as Partial<BacklogItem>
+    const checked = checkItem(one.text)
+    if (typeof one.id !== 'string' || !/^b\d+$/.test(one.id) || 'error' in checked) return []
+    return [{ id: one.id, text: checked.text, at: Number(one.at) || 0, by: one.by === 'claude' ? ('claude' as const) : ('person' as const) }]
+  })
+  const highest = items.reduce((max, item) => Math.max(max, Number(item.id.slice(1))), 0)
+  return { items, next: Math.max(Number(kept.next) || 1, highest + 1) }
+}
+
+/** What the model reads about the backlog at a conversation's start. */
+export function backlogBriefing(backlog: Backlog, tool: string): string {
+  const how =
+    `When the user says to do something later or next time, or work is left over when a task ends, add it with ${tool}; ` +
+    'mark items done by id once they are finished. When the user asks what is left, start from this list.'
+  if (backlog.items.length === 0) return `The project's backlog in the Task panel is empty. ${how}`
+  const lines = backlog.items.map(item => `- [${item.id}] ${item.text}`)
+  return `The project's backlog in the Task panel (things to do later, kept between chats):\n${lines.join('\n')}\n${how}`
+}
 
 // Replies that answer a question rather than ask for new work.
 const REPLY = /^(да|нет|ок|окей|ага|угу|давай|продолжай|дальше|go|yes|no|ok|y|n)[\s.!,]*$/iu
