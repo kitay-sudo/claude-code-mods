@@ -43,18 +43,27 @@ foreach ($name in $names) {
 }
 
 if ($Only -eq '') {
+    # Бейджи лежат в репозитории файлами, чтобы GitHub не ходил за ними на shields.io.
+    # Файл скачивается заново, только когда число на нём поменялось.
+    function Save-Badge([string]$file, [string]$url, [string]$title) {
+        $path = Join-Path $root ".github\badges\$file"
+        if ((Test-Path $path) -and ([IO.File]::ReadAllText($path, [Text.Encoding]::UTF8)).Contains("<title>$title</title>")) { return }
+        curl.exe -sf --max-time 20 -o $path $url
+        if ($LASTEXITCODE -ne 0) { Write-Host "Бейдж не обновился: $title" -ForegroundColor Yellow }
+    }
+    $total = $passed + $failed
+    $color = if ($failed -eq 0) { 'brightgreen' } else { 'red' }
+    Save-Badge 'tests.svg' "https://img.shields.io/badge/%D1%82%D0%B5%D1%81%D1%82%D1%8B-$passed%2F$total-$color" "тесты: $passed/$total"
+    Save-Badge 'mods.svg' "https://img.shields.io/badge/%D0%BC%D0%BE%D0%B4%D1%8B-$($names.Count)-8A2BE2" "моды: $($names.Count)"
+
+    # Версии модов в таблице README.
     $readme = Join-Path $root 'README.md'
     $text = [IO.File]::ReadAllText($readme, [Text.Encoding]::UTF8)
-    $color = if ($failed -eq 0) { 'brightgreen' } else { 'red' }
-    $total = $passed + $failed
-    # моды-8 и тесты-59/59 в адресах бейджей
-    $text = $text -replace '(badge/%D0%BC%D0%BE%D0%B4%D1%8B-)\d+', "`${1}$($names.Count)"
-    $text = $text -replace '(badge/%D1%82%D0%B5%D1%81%D1%82%D1%8B-)\d+%2F\d+-[a-z]+', "`${1}$passed%2F$total-$color"
     foreach ($name in $names) {
-        $text = $text -replace "(\*\*$([regex]::Escape($name))\*\* \| !\[\]\(https://img\.shields\.io/badge/v)[^-]+(-blue\))", "`${1}$($versions[$name])`${2}"
+        $text = $text -replace "(?m)^(\|[^|\n]*\b$([regex]::Escape($name))\b[^|\n]*\|\s*)v\d+\.\d+\.\d+", "`${1}v$($versions[$name])"
     }
     [IO.File]::WriteAllText($readme, $text, (New-Object Text.UTF8Encoding($false)))
-    Write-Host "README: модов $($names.Count), тестов $passed из $total" -ForegroundColor DarkGray
+    Write-Host "README и бейджи: модов $($names.Count), тестов $passed из $total" -ForegroundColor DarkGray
 }
 
 Write-Host ''

@@ -92,8 +92,10 @@ test('a request opens the panel, the todo list fills it, and all done turns it g
   await clock.advance(5 * MINUTE)
   const ui = await mountPane($, 'terminal')
   expect((await ui.find({ type: 'Text', text: '100 %' }))?.props.color).toBe('success')
-  expect((await ui.find({ type: 'Text', text: '✓ ВСЁ ГОТОВО ЗА 12 МИН' }))?.props.color).toBe('success')
+  expect((await ui.find({ type: 'Text', text: '🪴 ВСЁ ГОТОВО ЗА 12 МИН' }))?.props.color).toBe('success')
   expect(await ui.find({ type: 'Text', text: 'ВСЕ ЭТАПЫ ВЫПОЛНЕНЫ · III' })).toBeDefined()
+  // Nothing on the panel is bold.
+  expect((await ui.findAll({ type: 'Text' })).filter(found => found.props.bold === true)).toEqual([])
 })
 
 test('the plan tool lays out the steps where the model has no todo list', async ($, on) => {
@@ -141,10 +143,10 @@ test('/goal names the task, and the task tools fill its plan', async ($, on) => 
 
   await $.tool.call({ tool: 'TaskUpdate', taskId: '2', status: 'deleted' })
   expect(await ui.find({ type: 'Text', text: '100 %' })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /^✓ ВСЁ ГОТОВО/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^🪴 ВСЁ ГОТОВО/ })).toBeDefined()
 })
 
-test('without a plan the gauge reads 0 % while working and 100 % once answered', async ($, on) => {
+test('without a plan the gauge reads — while working and 100 % once answered', async ($, on) => {
   world(on)
   await $.session.start({ cwd: '/w', surface: 'terminal', isInteractive: true })
   const ui = await mountPane($, 'terminal')
@@ -155,10 +157,10 @@ test('without a plan the gauge reads 0 % while working and 100 % once answered',
 
   await $.prompt.submit({ text: 'Объясни, как работает кэш промптов', wait: false, origin: { kind: 'composer' } })
   expect(await ui.find({ type: 'Text', text: 'ПЛАН НЕ СОСТАВЛЕН' })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: '0 %' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: '—' })).toBeDefined()
   await turn('t1')
   expect((await ui.find({ type: 'Text', text: '100 %' }))?.props.color).toBe('success')
-  expect(await ui.find({ type: 'Text', text: '✓ ВСЁ ГОТОВО ЗА МЕНЬШЕ МИНУТЫ' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: '🪴 ВСЁ ГОТОВО ЗА МЕНЬШЕ МИНУТЫ' })).toBeDefined()
 
   await $.prompt.submit({ text: 'да', wait: false, origin: { kind: 'composer' } })
   expect(await ui.find({ type: 'Text', text: 'РЕЖИМ: ЖДУ ТЕБЯ' })).toBeDefined()
@@ -179,4 +181,86 @@ test('without a plan the gauge reads 0 % while working and 100 % once answered',
     origin: { kind: 'plugin', name: 'quick-steps', asUser: true },
   })
   expect(await ui.find({ type: 'Text', text: '«Прогони тесты модуля auth»' })).toBeDefined()
+})
+
+test('prompts typed while Claude works wait in a queue at the top, and leave it once read', async ($, on) => {
+  const { clock } = world(on)
+  on('prompt.attachment', ($, e) => ({ text: e.text }))
+  await $.session.start({ cwd: '/w', surface: 'desktop', isInteractive: true })
+  const ui = await mountPane($, 'desktop')
+  const texts = async () => (await ui.findAll({ type: 'Text' })).map(found => found.text)
+
+  await $.prompt.submit({ text: 'Собери отчёт по продажам за месяц', wait: false, origin: { kind: 'composer' } })
+  await $.turn.start({ text: 'Собери отчёт по продажам за месяц', turnId: 't1' })
+  expect(await texts()).not.toContain('ОЧЕРЕДЬ')
+
+  await $.prompt.submit({ text: 'Добавь  ещё график\nпо месяцам', wait: false, turnId: 't1', origin: { kind: 'composer' } })
+  await $.prompt.submit({ text: 'Потом обнови README проекта', wait: true, turnId: 't1', origin: { kind: 'composer' } })
+  await $.prompt.submit({ text: '/compact', wait: false, turnId: 't1', origin: { kind: 'composer' } })
+  let shown = await texts()
+  // The queue comes first, above the task.
+  expect(shown.indexOf('ОЧЕРЕДЬ')).toBeLessThan(shown.indexOf('ЗАДАЧА'))
+  for (const one of ['2', '1.', 'Добавь ещё график по месяцам', '2.', 'Потом обнови README проекта · после задачи']) expect(shown).toContain(one)
+  expect(shown).toContain('Прочитаю после текущего шага. Отмеченные "после задачи" начну, когда закончу эту.')
+  // The task stays the one being worked on.
+  expect(shown).toContain('«Собери отчёт по продажам за месяц»')
+
+  // Read after a step: it joins this task and leaves the queue.
+  await $.prompt.attachment({
+    type: 'queued_command',
+    text: 'The user sent a new message while you were working:\nДобавь ещё график\nпо месяцам',
+    origin: { kind: 'engine' },
+  })
+  shown = await texts()
+  expect(shown).not.toContain('Добавь ещё график по месяцам')
+  expect(shown).toContain('Начну, когда закончу эту задачу.')
+
+  // The one that waited starts the next turn, and a task of its own.
+  await $.turn.complete({ answer: 'ok', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' })
+  await $.turn.start({ text: 'Потом обнови README проекта', turnId: 't2' })
+  shown = await texts()
+  expect(shown).not.toContain('ОЧЕРЕДЬ')
+  expect(shown).toContain('«Потом обнови README проекта»')
+
+  // A prompt taken back from the queue (Esc, the up arrow) does not hang there.
+  await $.prompt.submit({ text: 'И проверь ссылки в README', wait: false, turnId: 't2', origin: { kind: 'composer' } })
+  expect(await texts()).toContain('И проверь ссылки в README')
+  await $.turn.complete({ answer: 'ok', durationMs: 1, isAborted: true, turnId: 't2', reason: 'answer' })
+  await clock.advance(40_000)
+  expect(await texts()).not.toContain('ОЧЕРЕДЬ')
+})
+
+test('a long run without a plan counts its actions and reminds the model to plan, once', async ($, on) => {
+  world(on)
+  on('prompt.context', ($, e) => ({ blocks: e.blocks }))
+  on('classic.PostToolUse', () => ({}))
+  await $.session.start({ cwd: '/w', surface: 'desktop', isInteractive: true })
+  const context = await $.prompt.context({ blocks: [] })
+  expect(context.blocks.find(block => block.name === 'taskPanel')?.text).toContain('call mcp__task-panel__plan before you start')
+
+  await $.prompt.submit({ text: 'Подключи провайдера claude к серверу', wait: false, origin: { kind: 'composer' } })
+  await $.turn.start({ text: 'Подключи провайдера claude к серверу', turnId: 't1' })
+  const base = { session_id: 's', transcript_path: '/t', cwd: '/w', hook_event_name: 'PostToolUse' as const, tool_input: {}, tool_response: {}, tool_use_id: 'u' }
+  const notes: (readonly string[] | undefined)[] = []
+  const act = async (tool: string, agentId?: string) => {
+    const result = await $.classic.PostToolUse({ ...base, tool_name: tool, ...(agentId === undefined ? {} : { agent_id: agentId }) })
+    notes.push(result.additionalContext)
+  }
+  await act('Read')
+  await act('Grep', 'sub-1') // a subagent's action is not the task's
+  await act('TodoWrite') // keeping a plan is not an action
+  await act('Edit')
+  await act('Bash')
+  await act('Bash')
+  await act('Bash')
+  expect(notes.map(note => note?.length ?? 0)).toEqual([0, 0, 0, 0, 0, 1, 0])
+  expect(notes[5]?.[0]).toContain('call mcp__task-panel__plan now')
+
+  const ui = await mountPane($, 'desktop')
+  expect(await ui.find({ type: 'Text', text: 'БЕЗ ПЛАНА · ДЕЙСТВИЙ: 5' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: '—' })).toBeDefined()
+
+  await $.tool.call({ tool: 'mcp__task-panel__plan', steps: [{ title: 'Провайдер', status: 'completed' }, { title: 'Прогрев', status: 'in_progress' }] })
+  expect(await ui.find({ type: 'Text', text: '50 %' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: 'ЭТАП II ИЗ II' })).toBeDefined()
 })

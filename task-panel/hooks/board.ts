@@ -1,6 +1,6 @@
 // The task's plan and clock as plain data: no `$`, so tests read it directly.
 
-import type { Step, StepStatus, Task } from '../types'
+import type { Queued, Step, StepStatus, Task } from '../types'
 
 const TITLE_MAX = 160
 
@@ -110,4 +110,33 @@ export function formatElapsed(ms: number): string {
 export function bar(percent: number, width: number): string {
   const filled = Math.round((percent / 100) * width)
   return `${'▰'.repeat(filled)}${'▱'.repeat(width - filled)}`
+}
+
+function plain(text: string): string {
+  return text.replace(/\s+/g, ' ').trim().toLowerCase()
+}
+
+/**
+ * The queued prompts a text the model now reads carries, and the ones still
+ * waiting: the first that matches for a message read mid-turn, every one that
+ * matches for a turn they start.
+ */
+export function takeQueued(queue: readonly Queued[], text: string, isEvery: boolean): { taken: Queued[]; rest: Queued[] } {
+  const reads = plain(text)
+  const taken: Queued[] = []
+  for (const item of queue) {
+    if (!isEvery && taken.length > 0) break
+    const words = plain(item.text)
+    if (words !== '' && reads.includes(words)) taken.push(item)
+  }
+  return { taken, rest: queue.filter(item => !taken.includes(item)) }
+}
+
+/** What the queue means for the person: when its prompts will be read. */
+export function queueHint(queue: readonly Queued[], isWorking: boolean): string {
+  if (!isWorking) return 'Беру в работу...'
+  const later = queue.filter(item => item.wait).length
+  if (later === queue.length) return 'Начну, когда закончу эту задачу.'
+  if (later > 0) return 'Прочитаю после текущего шага. Отмеченные "после задачи" начну, когда закончу эту.'
+  return 'Прочитаю после текущего шага и учту в работе.'
 }

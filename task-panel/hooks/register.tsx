@@ -8,11 +8,15 @@
 // (TodoWrite) or task list (TaskCreate, TaskUpdate, TaskList), read as those
 // tools run. A new task opens the pane; /task-panel opens it by hand where the
 // terminal is too narrow to place it.
+//
+// Prompts typed while Claude works wait in a queue shown at the top: each
+// leaves it when the model reads it, mid-turn after a step or as the turn it
+// starts.
 
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, PromptOrigin, Register, RenderElement } from 'claude-code'
 
-import type { Step, Task } from '../types'
+import type { Queued, Step, Task } from '../types'
 import {
   bar,
   currentStep,
@@ -21,10 +25,12 @@ import {
   fromTaskList,
   fromTodos,
   progress,
+  queueHint,
   readiness,
   roman,
   settle,
   startsTask,
+  takeQueued,
   titleOf,
   withCreated,
   withUpdate,
@@ -35,6 +41,25 @@ const PANE_TITLE = 'Пульт задачи'
 const PLAN_TOOL = 'mcp__task-panel__plan'
 const TICK_MS = 20_000
 const NUMERAL_WIDTH = 7
+const QUEUE_SHOWN = 90
+// Idle with prompts still queued means they were taken back: the engine starts
+// a queued prompt as soon as the session is idle.
+const STALE_QUEUE_MS = 15_000
+// Tools that keep the plan itself, not work on the task.
+const PLAN_TOOLS = new Set([PLAN_TOOL, 'TodoWrite', 'TaskCreate', 'TaskUpdate', 'TaskList', 'TaskGet'])
+// After this many actions without a plan the model is reminded, once a task.
+const NUDGE_AFTER = 4
+
+const BRIEFING =
+  'The user follows your work in the Task panel beside the chat. For a request that takes three or more steps, ' +
+  `call ${PLAN_TOOL} before you start, with every step, then again each time a step starts or finishes. ` +
+  'Without a plan the panel shows the user no progress. Prompts the user types while you work wait there as a ' +
+  'queue until you read them.'
+
+const NUDGE =
+  'The Task panel beside the chat shows no plan for this task yet, so the user sees no progress. If the task ' +
+  `takes three or more steps, call ${PLAN_TOOL} now with every step (the current one in_progress), then again as ` +
+  'each step finishes. If it is nearly done, ignore this.'
 
 // Prompts the person wrote: at the prompt, through Remote Control, or in the
 // app hosting the session.
@@ -74,6 +99,10 @@ const PLAN_SCHEMA = {
 const task = atom({ plugin: 'task-panel', key: 'task' } as const, null)
 const now = atom({ plugin: 'task-panel', key: 'now' } as const, 0)
 const isWorking = atom({ plugin: 'task-panel', key: 'isWorking' } as const, false)
+const queue = atom({ plugin: 'task-panel', key: 'queue' } as const, [] as Queued[])
+const idleSince = atom({ plugin: 'task-panel', key: 'idleSince' } as const, 0)
+const actions = atom({ plugin: 'task-panel', key: 'actions' } as const, 0)
+const nudged = atom({ plugin: 'task-panel', key: 'nudged' } as const, false)
 
 async function openPane($: EngineInterface): Promise<void> {
   await $.ui.open({ id: PANE, title: PANE_TITLE })
@@ -83,6 +112,8 @@ async function startTask($: EngineInterface, title: string, isGoal: boolean): Pr
   const at = await $.clock.now()
   await update($, now, () => at)
   await update($, task, () => ({ title, isGoal, startedAt: at, finishedAt: null, steps: [] }))
+  await update($, actions, () => 0)
+  await update($, nudged, () => false)
   await openPane($)
 }
 
@@ -108,10 +139,48 @@ async function finishTask($: EngineInterface, isPlanless: boolean): Promise<void
 }
 
 async function tick($: EngineInterface): Promise<void> {
+  const at = await $.clock.now()
+  const waiting = await read($, queue)
+  if (waiting.length > 0 && !(await read($, isWorking)) && at - (await read($, idleSince)) > STALE_QUEUE_MS) {
+    await update($, queue, () => [])
+  }
   const current = await read($, task)
   if (current === null || current.finishedAt !== null) return
-  const at = await $.clock.now()
   await update($, now, () => at)
+}
+
+async function enqueue($: EngineInterface, text: string, wait: boolean): Promise<void> {
+  const trimmed = text.trim()
+  if (trimmed === '' || trimmed.startsWith('/')) return
+  const at = await $.clock.now()
+  await update($, queue, list => [...list, { id: `q${at}-${list.length}`, text: trimmed, at, wait }])
+  await openPane($)
+}
+
+/** The queued prompts the model now reads, taken off the queue. */
+async function dequeue($: EngineInterface, text: string, isEvery: boolean): Promise<Queued[]> {
+  const waiting = await read($, queue)
+  if (waiting.length === 0) return []
+  const { taken, rest } = takeQueued(waiting, text, isEvery)
+  if (taken.length > 0) await update($, queue, () => rest)
+  return taken
+}
+
+/** One more action on the task at hand; the reminder to plan, when it is due. */
+async function counted($: EngineInterface): Promise<string | null> {
+  const current = await read($, task)
+  if (current === null || current.finishedAt !== null) return null
+  const count = (await read($, actions)) + 1
+  await update($, actions, () => count)
+  if (current.steps.length > 0 || count < NUDGE_AFTER || (await read($, nudged))) return null
+  await update($, nudged, () => true)
+  return NUDGE
+}
+
+function shortText(text: string): string {
+  const line = text.replace(/\s+/g, ' ').trim()
+  const points = [...line]
+  return points.length > QUEUE_SHOWN ? `${points.slice(0, QUEUE_SHOWN - 1).join('')}…` : line
 }
 
 async function personSaid($: EngineInterface, text: string): Promise<void> {
@@ -161,12 +230,26 @@ export const register: Register = on => {
     return result
   }).catch(($, e, next) => next(e))
 
+  // Typed while Claude works, a prompt waits in the queue; it counts as said
+  // once the model reads it.
   on('prompt.submit', async ($, e, next) => {
-    if (isPerson(e.origin)) await personSaid($, e.text)
+    if (isPerson(e.origin)) {
+      if (e.turnId !== undefined || (await read($, isWorking))) await enqueue($, e.text, e.wait)
+      else await personSaid($, e.text)
+    }
     return next(e)
   })
 
+  // Read mid-turn, after a step: it joins the task at hand.
+  on('prompt.attachment', { type: 'queued_command' }, async ($, e, next) => {
+    const result = await next(e)
+    if (e.agentId === undefined) await dequeue($, e.text, false)
+    return result
+  }).catch(($, e, next) => next(e))
+
+  // Read as the turn it starts: it may start a task of its own.
   on('turn.start', async ($, e, next) => {
+    for (const item of await dequeue($, e.text, true)) await personSaid($, item.text)
     await update($, isWorking, () => true)
     return next(e)
   })
@@ -174,11 +257,26 @@ export const register: Register = on => {
   on('turn.complete', async ($, e, next) => {
     const result = await next(e)
     if (e.agentId === undefined) {
+      const at = await $.clock.now()
       await update($, isWorking, () => false)
+      await update($, idleSince, () => at)
       await finishTask($, true)
     }
     return result
   })
+
+  on('prompt.context', async ($, e, next) => {
+    const context = await next(e)
+    return { ...context, blocks: [...context.blocks, { name: 'taskPanel', text: BRIEFING }] }
+  })
+
+  // Each action of the main thread counts; a long run without a plan gets one reminder.
+  on('classic.PostToolUse', async ($, e, next) => {
+    const result = await next(e)
+    if (e.agent_id !== undefined || PLAN_TOOLS.has(e.tool_name)) return result
+    const note = await counted($)
+    return note === null ? result : { ...result, additionalContext: [...(result.additionalContext ?? []), note] }
+  }).catch(($, e, next) => next(e))
 
   on('tool.call', { tool: PLAN_TOOL }, async ($, e) => {
     const plan = fromPlan((e as { steps?: unknown }).steps)
@@ -235,13 +333,43 @@ export const register: Register = on => {
     const current = await read($, task)
     const at = await read($, now)
     const working = await read($, isWorking)
+    const waiting = await read($, queue)
+    const actionCount = await read($, actions)
     const width = Math.max(12, e.props.bodyColumns - 1)
+
+    // What waits to be read, at the top, with when it will be.
+    const queued =
+      waiting.length > 0 ? (
+        <Box key="queue" flexDirection="column" marginBottom={1}>
+          <Box justifyContent="space-between">
+            <Text dimColor>ОЧЕРЕДЬ</Text>
+            <Text color="claude">{waiting.length}</Text>
+          </Box>
+          {waiting.map((item, index) => (
+            <Box key={item.id}>
+              <Box width={NUMERAL_WIDTH} flexShrink={0}>
+                <Text color="claude">{index + 1}.</Text>
+              </Box>
+              <Box flexGrow={1}>
+                <Text wrap="wrap">
+                  {shortText(item.text)}
+                  {item.wait ? <Text dimColor> · после задачи</Text> : ''}
+                </Text>
+              </Box>
+            </Box>
+          ))}
+          <Text dimColor wrap="wrap">
+            {queueHint(waiting, working)}
+          </Text>
+        </Box>
+      ) : null
 
     if (current === null) {
       return (
         <Box flexDirection="column">
+          {queued}
           <Text dimColor>ЗАДАЧА</Text>
-          <Text bold>не задана</Text>
+          <Text>не задана</Text>
           <Box marginTop={1}>
             <Text dimColor wrap="wrap">
               Напиши, что сделать, или поставь цель через /goal.
@@ -258,12 +386,14 @@ export const register: Register = on => {
     const elapsed = formatElapsed((current.finishedAt ?? Math.max(at, current.startedAt)) - current.startedAt)
     const stage =
       total === 0
-        ? 'ПЛАН НЕ СОСТАВЛЕН'
+        ? actionCount > 0 && current.finishedAt === null
+          ? `БЕЗ ПЛАНА · ДЕЙСТВИЙ: ${actionCount}`
+          : 'ПЛАН НЕ СОСТАВЛЕН'
         : done === total
           ? `ВСЕ ЭТАПЫ ВЫПОЛНЕНЫ · ${roman(total)}`
           : `ЭТАП ${roman(currentStep(current.steps))} ИЗ ${roman(total)}`
     const mode = isDone
-      ? `✓ ВСЁ ГОТОВО ЗА ${elapsed.toUpperCase()}`
+      ? `🪴 ВСЁ ГОТОВО ЗА ${elapsed.toUpperCase()}`
       : current.finishedAt !== null
         ? 'ОСТАНОВЛЕНО'
         : working
@@ -272,16 +402,15 @@ export const register: Register = on => {
 
     return (
       <Box flexDirection="column">
+        {queued}
         <Text dimColor>{current.isGoal ? 'ЦЕЛЬ · /goal' : 'ЗАДАЧА'}</Text>
-        <Text bold wrap="wrap">
+        <Text wrap="wrap">
           «{current.title}»
         </Text>
         <Box marginTop={1} flexDirection="column">
           <Box justifyContent="space-between">
             <Text dimColor>ГОТОВНОСТЬ</Text>
-            <Text bold {...green}>
-              {percent} %
-            </Text>
+            <Text {...green}>{total === 0 && current.finishedAt === null ? '—' : `${percent} %`}</Text>
           </Box>
           <Text wrap="truncate" {...(isDone ? green : { color: 'claude' })}>
             {bar(percent, Math.min(24, width))}
@@ -298,7 +427,7 @@ export const register: Register = on => {
                 step.status === 'completed'
                   ? { color: 'success' }
                   : step.status === 'in_progress'
-                    ? { color: 'claude', bold: true }
+                    ? { color: 'claude' }
                     : { dimColor: true }
               return (
                 <Box key={step.id}>
@@ -319,7 +448,7 @@ export const register: Register = on => {
           </Box>
         )}
         <Box marginTop={1}>
-          <Text bold={isDone} dimColor={!isDone} {...green}>
+          <Text dimColor={!isDone} {...green}>
             {mode}
           </Text>
         </Box>
