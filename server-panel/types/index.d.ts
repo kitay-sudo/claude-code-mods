@@ -75,6 +75,8 @@ declare module 'claude-code' {
       draft: Draft
       /** `<server>:<action>` waiting for its second press, or null. */
       confirming: string | null
+      /** Whether the new-server form is open while servers already exist. */
+      adding: boolean
     }
   }
 }

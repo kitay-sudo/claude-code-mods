@@ -202,3 +202,43 @@ test('the pane forgets a server only on a second press', async ($, on) => {
   await pane.press({ key: 'yes-forget-prod' })
   expect(await pane.find({ type: 'Text', text: /^Пока нет/ })).toBeDefined()
 })
+
+test('with no server yet the form is open, each label above its field', async ($, on) => {
+  world(on)
+  await $.session.start({ cwd: 'C:\\proj', surface: 'desktop', isInteractive: true })
+  const pane = await $.ui.mount({ plugin: 'server-panel', surface: 'desktop', component: 'Pane', requestId: 'server-panel', props: PANE })
+  const shown = (await pane.findAll({ type: 'Text' })).map(found => found.text)
+  for (const one of ['СЕРВЕР ПРОЕКТА', 'Адрес для ssh', 'Папка проекта на сервере', 'Команда деплоя', 'можно оставить пустым']) expect(shown).toContain(one)
+  expect(shown.indexOf('Адрес для ssh')).toBeLessThan(shown.indexOf('Папка проекта на сервере'))
+  expect((await pane.find({ type: 'Input', key: 'sp-address' }))?.props.label).toBeUndefined()
+  expect(await pane.find({ type: 'Button', key: 'sp-cancel' })).toBeUndefined()
+})
+
+test('a kept server is a card, the form folds behind one button, the journal takes two lines a command', async ($, on) => {
+  const { clock } = world(on, { [STORE_KEY]: { servers: [PROD], settings: { confirm: 'risky', band: true } } })
+  await $.session.start({ cwd: 'C:\\proj', surface: 'desktop', isInteractive: true })
+  await clock.settle()
+  await $.tool.call({ tool: RUN, server: 'prod', command: 'docker compose ps', why: 'посмотреть' })
+  const pane = await $.ui.mount({ plugin: 'server-panel', surface: 'desktop', component: 'Pane', requestId: 'server-panel', props: PANE })
+  const texts = async () => (await pane.findAll({ type: 'Text' })).map(found => found.text)
+
+  const shown = await texts()
+  for (const one of ['prod', 'ДЕПЛОЙ', PROD.deploy, 'вручную', 'НАСТРОЙКИ', 'Подтверждать команды Claude', 'Строка над полем ввода', 'ЖУРНАЛ', 'docker compose ps']) {
+    expect(shown).toContain(one)
+  }
+  expect(shown.some(text => /^на связи/.test(text))).toBe(true)
+  expect(shown.some(text => /^✓ \d\d:\d\d prod · exit 0 · Claude$/.test(text))).toBe(true)
+  expect((await pane.find({ type: 'Button', key: 'sp-confirm' }))?.text).toBe('только опасные')
+  expect((await pane.find({ type: 'Button', key: 'sp-band' }))?.text).toBe('видна')
+  expect((await pane.find({ type: 'Button', key: 'deploy-prod' }))?.props.variant).toBe('primary')
+  expect(await pane.find({ type: 'Input', key: 'sp-address' })).toBeUndefined()
+
+  await pane.press({ key: 'sp-add' })
+  expect(await pane.find({ type: 'Input', key: 'sp-address' })).toBeDefined()
+  expect(await texts()).toContain('НОВЫЙ СЕРВЕР')
+  await pane.press({ key: 'sp-cancel' })
+  expect(await pane.find({ type: 'Input', key: 'sp-address' })).toBeUndefined()
+
+  // Nothing on the pane is bold.
+  expect((await pane.findAll({ type: 'Text' })).filter(found => found.props.bold === true)).toEqual([])
+})

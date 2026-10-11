@@ -40,7 +40,7 @@ const PANE_TITLE = 'Сервер-пульт'
 const RUN_TOOL = 'mcp__server-panel__run'
 const SAVE_TOOL = 'mcp__server-panel__save_server'
 const MAX_RUNS = 20
-const SHOWN_RUNS = 6
+const SHOWN_RUNS = 5
 const DEFAULT_TIMEOUT_SEC = 120
 const DEPLOY_TIMEOUT_SEC = 600
 const COMMAND_SHOWN = 800
@@ -61,6 +61,7 @@ const health = atom({ plugin: 'server-panel', key: 'health' } as const, {})
 const setup = atom({ plugin: 'server-panel', key: 'setup' } as const, null)
 const draft = atom({ plugin: 'server-panel', key: 'draft' } as const, EMPTY_DRAFT)
 const confirming = atom({ plugin: 'server-panel', key: 'confirming' } as const, null)
+const adding = atom({ plugin: 'server-panel', key: 'adding' } as const, false)
 
 // The connect assistant's poll; a reload drops it, and «Подключить» starts it again.
 let setupTimer: Timer | undefined
@@ -343,7 +344,13 @@ async function saveFromForm($: EngineInterface): Promise<void> {
   }
   await keepServers($, [...list, checked.server])
   await update($, draft, () => EMPTY_DRAFT)
+  await update($, adding, () => false)
   await connect($, checked.server.name)
+}
+
+async function stopAdding($: EngineInterface): Promise<void> {
+  await update($, draft, () => EMPTY_DRAFT)
+  await update($, adding, () => false)
 }
 
 async function homeFolder($: EngineInterface): Promise<{ home: string; isWindows: boolean } | null> {
@@ -648,6 +655,10 @@ export const register: Register = on => {
     )
   })
 
+  // The pane in blocks with air between them: each server a card (state on the
+  // right, address under it, the deploy apart, actions last), the form with its
+  // labels above the fields, settings as label and value, the journal two lines
+  // a command.
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e): Promise<RenderElement> => {
     const elements = $.ui.resolve(e)
     const { Box, Text, Button } = elements
@@ -660,9 +671,27 @@ export const register: Register = on => {
     const waiting = await read($, confirming)
     const assistant = await read($, setup)
     const form = await read($, draft)
+    const isAdding = (await read($, adding)) || list.length === 0
     const recent = history.slice(-SHOWN_RUNS).reverse()
     const latest = history.at(-1)
     const width = Math.max(24, e.props.bodyColumns - 4)
+
+    const field = (key: 'address' | 'dir' | 'deploy', title: string, placeholder: string, hint: string, onSubmit: (value: string) => void) =>
+      Input === undefined ? null : (
+        <Box key={`field-${key}`} flexDirection="column" marginTop={1}>
+          <Text>{title}</Text>
+          <Input
+            key={`sp-${key}`}
+            placeholder={placeholder}
+            value={form[key]}
+            onInput={value => void editDraft($, key, value)}
+            onSubmit={value => onSubmit(value)}
+          />
+          <Text dimColor wrap="wrap">
+            {hint}
+          </Text>
+        </Box>
+      )
 
     return (
       <Box flexDirection="column">
@@ -679,31 +708,46 @@ export const register: Register = on => {
           </Box>
         )}
 
-        <Text dimColor>СЕРВЕРЫ ПРОЕКТА</Text>
+        <Text dimColor>{list.length > 1 ? 'СЕРВЕРЫ ПРОЕКТА' : 'СЕРВЕР ПРОЕКТА'}</Text>
         {list.length === 0 && (
-          <Text dimColor wrap="wrap">
-            Пока нет. Добавь ниже: адрес, папку и команду деплоя. Остальное пульт сделает сам.
-          </Text>
+          <Box marginTop={1}>
+            <Text wrap="wrap">
+              Пока нет ни одного. Добавь сервер, и Claude сможет сам заходить на него, проверять и деплоить. Пароль спросят один раз в отдельном окне, его не видит ни пульт, ни Claude.
+            </Text>
+          </Box>
         )}
+
         {list.map(server => {
           const state = states[server.name]
           const isBusy = history.some(run => run.server === server.name && run.status === 'running')
-          const look =
-            state?.state === 'ok' ? { color: 'success' } : state?.state === 'fail' ? { color: 'error' } : { dimColor: true }
+          const look = state?.state === 'ok' ? { color: 'success' } : state?.state === 'fail' ? { color: 'error' } : { dimColor: true }
+          const status =
+            state?.state === 'ok'
+              ? `на связи${state.ms === null ? '' : ` · ${state.ms} мс`}`
+              : state?.state === 'fail'
+                ? 'нет связи'
+                : state?.state === 'checking'
+                  ? 'проверяю…'
+                  : 'не проверен'
+          const lastDeploy = [...history].reverse().find(run => run.server === server.name && run.command === server.deploy)
+          const deployState = [
+            server.deployMode === 'after-push' ? 'сам после git push' : 'вручную',
+            lastDeploy === undefined
+              ? ''
+              : lastDeploy.status === 'running'
+                ? 'идёт сейчас'
+                : `последний ${clock(lastDeploy.at)} ${lastDeploy.status === 'done' ? '✓' : lastDeploy.status === 'failed' ? '✗' : '–'}`,
+          ]
+            .filter(part => part !== '')
+            .join(' · ')
           return (
             <Box key={`srv-${server.name}`} marginTop={1} flexDirection="column">
-              <Box gap={1}>
-                <Text {...look}>●</Text>
-                <Text bold>{server.name}</Text>
-                <Text dimColor>
-                  {state?.state === 'ok'
-                    ? `на связи${state.ms === null ? '' : ` · ${state.ms} мс`}`
-                    : state?.state === 'fail'
-                      ? 'нет связи'
-                      : state?.state === 'checking'
-                        ? 'проверяю…'
-                        : 'не проверен'}
-                </Text>
+              <Box justifyContent="space-between">
+                <Box gap={1}>
+                  <Text {...look}>●</Text>
+                  <Text>{server.name}</Text>
+                </Box>
+                <Text {...(state?.state === 'ok' ? { color: 'success' } : state?.state === 'fail' ? { color: 'error' } : { dimColor: true })}>{status}</Text>
               </Box>
               <Text dimColor wrap="wrap">
                 {address(server)}
@@ -715,100 +759,115 @@ export const register: Register = on => {
                   {state.note}
                 </Text>
               )}
+
               {server.deploy !== undefined && (
-                <Text dimColor wrap="wrap">
-                  деплой: {server.deploy}
-                </Text>
-              )}
-              {isBusy ? (
-                <Text color="claude">выполняется…</Text>
-              ) : waiting === `${server.name}:deploy` ? (
-                <Box gap={1} flexWrap="wrap">
-                  <Text color="warning">Задеплоить на {server.name}?</Text>
-                  <Button key={`yes-deploy-${server.name}`} variant="primary" label="Да, деплой" onPress={() => void personDeploy($, server.name)} />
-                  <Button key={`no-deploy-${server.name}`} label="Отмена" onPress={() => void update($, confirming, () => null)} />
-                </Box>
-              ) : waiting === `${server.name}:forget` ? (
-                <Box gap={1} flexWrap="wrap">
-                  <Text color="warning">Убрать {server.name} из пульта? На сервере ничего не изменится.</Text>
-                  <Button key={`yes-forget-${server.name}`} label="Да, убрать" onPress={() => void forgetServer($, server.name)} />
-                  <Button key={`no-forget-${server.name}`} label="Отмена" onPress={() => void update($, confirming, () => null)} />
-                </Box>
-              ) : (
-                <Box gap={1} flexWrap="wrap">
-                  {state?.state !== 'ok' && <Button key={`connect-${server.name}`} variant="primary" label="Подключить" onPress={() => void connect($, server.name)} />}
-                  <Button key={`check-${server.name}`} label="Проверить связь" onPress={() => void personCheck($, server.name)} />
-                  {server.deploy !== undefined && (
-                    <Button key={`deploy-${server.name}`} label="Задеплоить" onPress={() => void update($, confirming, () => `${server.name}:deploy`)} />
-                  )}
-                  {server.deploy !== undefined && (
-                    <Button
-                      key={`mode-${server.name}`}
-                      label={server.deployMode === 'after-push' ? 'Деплой: сам после пуша' : 'Деплой: вручную'}
-                      onPress={() => void toggleDeployMode($, server.name)}
-                    />
-                  )}
-                  <Button key={`forget-${server.name}`} label="Забыть" onPress={() => void update($, confirming, () => `${server.name}:forget`)} />
+                <Box marginTop={1} flexDirection="column">
+                  <Text dimColor>ДЕПЛОЙ</Text>
+                  <Text wrap="wrap">{server.deploy}</Text>
+                  <Text dimColor>{deployState}</Text>
                 </Box>
               )}
+
+              <Box marginTop={1} flexDirection="column">
+                {isBusy ? (
+                  <Text color="claude">выполняется…</Text>
+                ) : waiting === `${server.name}:deploy` ? (
+                  <Box flexDirection="column">
+                    <Text color="warning">Задеплоить на {server.name}?</Text>
+                    <Box gap={1} flexWrap="wrap">
+                      <Button key={`yes-deploy-${server.name}`} variant="primary" label="Да, деплой" onPress={() => void personDeploy($, server.name)} />
+                      <Button key={`no-deploy-${server.name}`} label="Отмена" onPress={() => void update($, confirming, () => null)} />
+                    </Box>
+                  </Box>
+                ) : waiting === `${server.name}:forget` ? (
+                  <Box flexDirection="column">
+                    <Text color="warning" wrap="wrap">
+                      Убрать {server.name} из пульта? На сервере ничего не изменится.
+                    </Text>
+                    <Box gap={1} flexWrap="wrap">
+                      <Button key={`yes-forget-${server.name}`} label="Да, убрать" onPress={() => void forgetServer($, server.name)} />
+                      <Button key={`no-forget-${server.name}`} label="Отмена" onPress={() => void update($, confirming, () => null)} />
+                    </Box>
+                  </Box>
+                ) : (
+                  <Box flexDirection="column">
+                    <Box gap={1} flexWrap="wrap">
+                      {state?.state !== 'ok' && (
+                        <Button key={`connect-${server.name}`} variant="primary" label="Подключить" onPress={() => void connect($, server.name)} />
+                      )}
+                      {server.deploy !== undefined && (
+                        <Button
+                          key={`deploy-${server.name}`}
+                          {...(state?.state === 'ok' ? { variant: 'primary' as const } : {})}
+                          label="Задеплоить"
+                          onPress={() => void update($, confirming, () => `${server.name}:deploy`)}
+                        />
+                      )}
+                      <Button key={`check-${server.name}`} label="Проверить связь" onPress={() => void personCheck($, server.name)} />
+                    </Box>
+                    <Box gap={2} flexWrap="wrap">
+                      {server.deploy !== undefined && (
+                        <Button
+                          key={`mode-${server.name}`}
+                          plain
+                          label={server.deployMode === 'after-push' ? 'Деплой: сам после пуша' : 'Деплой: вручную'}
+                          onPress={() => void toggleDeployMode($, server.name)}
+                        />
+                      )}
+                      <Button key={`forget-${server.name}`} plain label="Забыть сервер" onPress={() => void update($, confirming, () => `${server.name}:forget`)} />
+                    </Box>
+                  </Box>
+                )}
+              </Box>
             </Box>
           )
         })}
 
-        {Input !== undefined && (
-        <Box marginTop={1} flexDirection="column">
-          <Text dimColor>ДОБАВИТЬ СЕРВЕР</Text>
-          <Input
-            key="sp-address"
-            label="Адрес"
-            placeholder="root@1.2.3.4"
-            value={form.address}
-            onInput={value => void editDraft($, 'address', value)}
-            onSubmit={value => void editDraft($, 'address', value).then(() => saveFromForm($))}
-          />
-          <Input
-            key="sp-dir"
-            label="Папка"
-            placeholder="~/app"
-            value={form.dir}
-            onInput={value => void editDraft($, 'dir', value)}
-            onSubmit={value => void editDraft($, 'dir', value)}
-          />
-          <Input
-            key="sp-deploy"
-            label="Деплой"
-            placeholder="git pull && docker compose up -d --build"
-            value={form.deploy}
-            onInput={value => void editDraft($, 'deploy', value)}
-            onSubmit={value => void editDraft($, 'deploy', value)}
-          />
-          {form.error !== '' && (
-            <Text color="error" wrap="wrap">
-              {form.error}
-            </Text>
-          )}
-          <Box>
-            <Button key="sp-save" variant="primary" label="Сохранить и подключить" onPress={() => void saveFromForm($)} />
+        {Input !== undefined && isAdding && (
+          <Box marginTop={1} flexDirection="column">
+            {list.length > 0 && <Text dimColor>НОВЫЙ СЕРВЕР</Text>}
+            {field('address', 'Адрес для ssh', 'root@1.2.3.4', 'пользователь@адрес, порт через двоеточие: root@1.2.3.4:2222', value =>
+              void editDraft($, 'address', value).then(() => saveFromForm($)),
+            )}
+            {field('dir', 'Папка проекта на сервере', '~/app', 'можно оставить пустым', value => void editDraft($, 'dir', value))}
+            {field('deploy', 'Команда деплоя', 'git pull && docker compose up -d --build', 'можно оставить пустым и добавить потом', value =>
+              void editDraft($, 'deploy', value),
+            )}
+            {form.error !== '' && (
+              <Box marginTop={1}>
+                <Text color="error" wrap="wrap">
+                  {form.error}
+                </Text>
+              </Box>
+            )}
+            <Box marginTop={1} gap={1}>
+              <Button key="sp-save" variant="primary" label="Сохранить и подключить" onPress={() => void saveFromForm($)} />
+              {list.length > 0 && <Button key="sp-cancel" label="Отмена" onPress={() => void stopAdding($)} />}
+            </Box>
           </Box>
-        </Box>
+        )}
+        {Input !== undefined && !isAdding && (
+          <Box marginTop={1}>
+            <Button key="sp-add" plain label="+ Добавить сервер" onPress={() => void update($, adding, () => true)} />
+          </Box>
         )}
 
         <Box marginTop={1} flexDirection="column">
           <Text dimColor>НАСТРОЙКИ</Text>
-          <Box gap={1} flexWrap="wrap">
-            <Button
-              key="sp-confirm"
-              label={mode.confirm === 'every' ? 'Спрашивать: каждую команду' : 'Спрашивать: только опасные'}
-              onPress={() => void toggleConfirm($)}
-            />
-            <Button key="sp-band" label={mode.band ? 'Строка над полем: видна' : 'Строка над полем: скрыта'} onPress={() => void toggleBand($)} />
+          <Box justifyContent="space-between">
+            <Text>Подтверждать команды Claude</Text>
+            <Button key="sp-confirm" label={mode.confirm === 'every' ? 'каждую' : 'только опасные'} onPress={() => void toggleConfirm($)} />
+          </Box>
+          <Box justifyContent="space-between">
+            <Text>Строка над полем ввода</Text>
+            <Button key="sp-band" label={mode.band ? 'видна' : 'скрыта'} onPress={() => void toggleBand($)} />
           </Box>
         </Box>
 
         {recent.length > 0 && (
           <Box marginTop={1} flexDirection="column">
-            <Text dimColor>ПОСЛЕДНИЕ КОМАНДЫ</Text>
-            {recent.map(run => {
+            <Text dimColor>ЖУРНАЛ</Text>
+            {recent.map((run, index) => {
               const look =
                 run.status === 'done'
                   ? { color: 'success' }
@@ -819,17 +878,25 @@ export const register: Register = on => {
                       : { dimColor: true }
               const mark = run.status === 'done' ? '✓' : run.status === 'failed' ? '✗' : run.status === 'running' ? '…' : '–'
               const exit = run.exitCode === null ? (run.status === 'cancelled' ? ' · отменена' : '') : ` · exit ${run.exitCode}`
-              const who = run.by === 'auto' ? ' · авто' : run.by === 'person' ? ' · ты' : ''
+              const who = run.by === 'auto' ? ' · авто' : run.by === 'person' ? ' · ты' : ' · Claude'
               return (
-                <Text {...look} wrap="truncate">
-                  {mark} {clock(run.at)} {run.server} · {short(run.command, width)}
-                  {exit}
-                  {who}
-                </Text>
+                <Box key={`run-${run.id}`} flexDirection="column" {...(index > 0 ? { marginTop: 1 } : {})}>
+                  <Text {...look}>
+                    {mark} {clock(run.at)} {run.server}
+                    {exit}
+                    {who}
+                  </Text>
+                  <Box marginLeft={2}>
+                    <Text dimColor wrap="truncate">
+                      {short(run.command, width - 2)}
+                    </Text>
+                  </Box>
+                </Box>
               )
             })}
             {latest !== undefined && latest.tail !== '' && (
-              <Box marginTop={1}>
+              <Box marginTop={1} flexDirection="column">
+                <Text dimColor>ВЫВОД ПОСЛЕДНЕЙ КОМАНДЫ</Text>
                 <Text dimColor wrap="wrap">
                   {latest.tail}
                 </Text>
