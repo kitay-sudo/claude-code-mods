@@ -757,9 +757,11 @@ export const register: Register = on => {
               onInput={value => void editDraft($, key, value)}
               onSubmit={value => onSubmit(value)}
             />
-            <Text dimColor wrap="wrap">
-              {hint}
-            </Text>
+            <Box marginTop={1}>
+              <Text dimColor wrap="wrap">
+                {hint}
+              </Text>
+            </Box>
           </Box>
         </Box>
       )

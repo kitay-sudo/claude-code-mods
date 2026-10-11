@@ -507,7 +507,9 @@ export const register: Register = on => {
               onInput={value => void update($, backlogDraft, () => value)}
               onSubmit={value => void personAddItem($, value)}
             />
-            <Text dimColor>Enter, чтобы добавить</Text>
+            <Box marginTop={1}>
+              <Text dimColor>Enter, чтобы добавить</Text>
+            </Box>
           </Box>
         )}
       </Box>

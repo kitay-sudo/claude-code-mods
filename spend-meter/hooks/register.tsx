@@ -379,7 +379,9 @@ export const register: Register = (on, options) => {
               onSubmit={value => void editBudget($, value).then(() => setBudget($, false))}
             />
           )}
-          <Text dimColor>рублей на весь проект, Enter чтобы сохранить</Text>
+          <Box marginTop={1}>
+            <Text dimColor>рублей на весь проект, Enter чтобы сохранить</Text>
+          </Box>
           {budget !== null && (
             <Box marginTop={1}>
               <Button key="sm-budget-clear" label="Убрать бюджет" onPress={() => void setBudget($, true)} />

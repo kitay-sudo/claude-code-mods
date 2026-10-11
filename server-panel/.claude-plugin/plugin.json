@@ -1,6 +1,6 @@
 {
   "name": "server-panel",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "Сервер-пульт: связь, здоровье сервера (процессор, память, диск, сервисы) и ошибки в логах на любом стеке: Docker Compose, Docker, pm2, systemd, логи Laravel, Symfony, WordPress и nginx. Деплой кнопкой или сам после git push, подключение по ключу в один клик. Claude выполняет команды на сервере после твоего подтверждения.",
   "types": "./types/index.d.ts"
 }
