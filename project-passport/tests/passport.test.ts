@@ -129,6 +129,30 @@ test('the pane reads in sections: no long dashes, labels above the fields, setti
   // The fields carry no labels of their own: theirs stand above them.
   expect((await pane.find({ type: 'Select', key: 'pp-section' }))?.props.label).toBeUndefined()
   expect((await pane.find({ type: 'Input', key: 'pp-text' }))?.props.label).toBeUndefined()
+  // "Добавить" stands at the right of the note field, on its row.
+  type Node = { type?: string; props?: Record<string, unknown>; children?: unknown[] }
+  const holds = (node: unknown, type: string, key: string): boolean => {
+    const one = node as Node
+    if (typeof node !== 'object' || node === null) return false
+    if (one.type === type && one.props?.key === key) return true
+    return (one.children ?? []).some(child => holds(child, type, key))
+  }
+  // The innermost Box that holds both, each in a child of its own.
+  const rowOf = (node: unknown): Node | undefined => {
+    const one = node as Node
+    if (typeof node !== 'object' || node === null) return undefined
+    const children = one.children ?? []
+    for (const child of children) {
+      const found = rowOf(child)
+      if (found !== undefined) return found
+    }
+    const field = children.findIndex(child => holds(child, 'Input', 'pp-text'))
+    const button = children.findIndex(child => holds(child, 'Button', 'pp-add'))
+    return one.type === 'Box' && field !== -1 && button !== -1 && field !== button ? one : undefined
+  }
+  const row = rowOf(await pane.drawn())
+  expect(row).toBeDefined()
+  expect(row?.props?.flexDirection).toBeUndefined()
   expect((await pane.find({ type: 'Button', key: 'pp-autoopen' }))?.text).toBe('да')
   expect((await pane.find({ type: 'Button', key: 'pp-ask' }))?.text).toBe('с вопросом')
   expect((await pane.findAll({ type: 'Text' })).filter(found => found.props.bold === true)).toEqual([])

@@ -320,13 +320,21 @@ export const register: Register = on => {
             <Box marginTop={2} flexDirection="column">
               <Text>Заметка</Text>
               <Box marginTop={1} flexDirection="column">
-                <Input
-                  key="pp-text"
-                  placeholder="Например: Денису пишем по-английски, коротко и без смайлов"
-                  value={form.text}
-                  onInput={value => void editDraft($, { text: value })}
-                  onSubmit={value => void editDraft($, { text: value }).then(() => personAdd($))}
-                />
+                {/* The field and its button on one row: the field takes the width, the button stays at its right. */}
+                <Box gap={1} alignItems="center">
+                  <Box flexGrow={1}>
+                    <Input
+                      key="pp-text"
+                      placeholder="Например: Денису пишем по-английски, коротко и без смайлов"
+                      value={form.text}
+                      onInput={value => void editDraft($, { text: value })}
+                      onSubmit={value => void editDraft($, { text: value }).then(() => personAdd($))}
+                    />
+                  </Box>
+                  <Box flexShrink={0}>
+                    <Button key="pp-add" label="Добавить" onPress={() => void personAdd($)} />
+                  </Box>
+                </Box>
                 <Box marginTop={1}>
                   <Text dimColor wrap="wrap">
                     Одна мысль одной строкой. Пароли и ключи сюда не пишем.
@@ -341,9 +349,6 @@ export const register: Register = on => {
                 </Text>
               </Box>
             )}
-            <Box marginTop={2}>
-              <Button key="pp-add" label="Добавить" onPress={() => void personAdd($)} />
-            </Box>
           </Box>
         )}
 
