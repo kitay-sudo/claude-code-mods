@@ -317,3 +317,72 @@ test('the project backlog outlives the chat: Claude and the person add to it, "�
   const fresh = (await $.prompt.context({ blocks: [] })).blocks.find(block => block.name === 'taskPanel')?.text ?? ''
   expect(fresh).toContain("The project's backlog in the Task panel is empty.")
 })
+
+test('backlog items show their age, close as done or not needed with real buttons, and come back', async ($, on) => {
+  world(on)
+  const DAY = 24 * 60 * 60 * 1000
+  mock.store(on, {
+    'backlog:c:/work/shop': {
+      items: [
+        { id: 'b1', text: 'Перевести письма на Zoho', at: 1_000_000, by: 'claude' },
+        { id: 'b2', text: 'Старая идея про баннер', at: 1_000_000 - 20 * DAY, by: 'person' },
+        { id: 'b3', text: 'Проверить версию 1.5.0 на сервере', at: 1_000_000, by: 'claude' },
+      ],
+      next: 4,
+    },
+  })
+  on('session.cwd', () => ({ value: 'C:\\work\\shop' }))
+  on('ui.toast', () => ({ value: undefined }))
+  await $.session.start({ cwd: 'C:\\work\\shop', surface: 'desktop', isInteractive: true })
+  const ui = await mountPane($, 'desktop')
+  const texts = async () => (await ui.findAll({ type: 'Text' })).map(found => found.text)
+
+  let shown = await texts()
+  expect(shown).toContain('Claude · сегодня')
+  // An old item asks whether it is still needed.
+  expect(shown).toContain('ты · 20 дн. назад · давно, ещё нужно?')
+  expect((await ui.find({ type: 'Text', text: 'ты · 20 дн. назад · давно, ещё нужно?' }))?.props.color).toBe('warning')
+  // Real buttons, not plain text.
+  for (const key of ['take-b1', 'done-b1', 'drop-b1', 'backlog-check', 'backlog-clear']) {
+    expect((await ui.find({ type: 'Button', key }))?.props.plain).toBeUndefined()
+  }
+  expect((await ui.find({ type: 'Button', key: 'drop-b2' }))?.text).toBe('✕ не актуально')
+
+  await ui.press({ key: 'done-b3' })
+  await ui.press({ key: 'drop-b2' })
+  shown = await texts()
+  expect(shown).toContain('БЭКЛОГ ПРОЕКТА · 1')
+  expect(shown).toContain('ЗАКРЫТО НЕДАВНО')
+  // Newest closed first.
+  expect(shown.indexOf('✕ Старая идея про баннер')).toBeLessThan(shown.indexOf('✓ Проверить версию 1.5.0 на сервере'))
+
+  // Closed by mistake: back where it was.
+  await ui.press({ key: 'reopen-b3' })
+  expect(await ui.find({ type: 'Text', text: 'Проверить версию 1.5.0 на сервере' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: 'БЭКЛОГ ПРОЕКТА · 2' })).toBeDefined()
+
+  // "Очистить всё" takes a second press, and what it clears can still come back.
+  await ui.press({ key: 'backlog-clear' })
+  expect(await ui.find({ type: 'Text', text: /^Убрать все пункты \(2\)/ })).toBeDefined()
+  await ui.press({ key: 'backlog-clear-yes' })
+  expect(await ui.find({ type: 'Text', text: 'БЭКЛОГ ПРОЕКТА · пусто' })).toBeDefined()
+  expect(await ui.find({ type: 'Button', key: 'reopen-b1' })).toBeDefined()
+
+  // Claude marks the ones no longer needed with drop.
+  await ui.press({ key: 'reopen-b1' })
+  const dropped = await $.tool.call({ tool: 'mcp__task-panel__backlog', drop: ['b1'] })
+  expect(dropped.deny).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: '✕ Перевести письма на Zoho' })).toBeDefined()
+})
+
+test('"Проверить, что актуально" hands Claude the check as a task of its own', async ($, on) => {
+  world(on)
+  mock.store(on, { 'backlog:c:/work/shop': { items: [{ id: 'b1', text: 'Перевести письма на Zoho', at: 1_000_000, by: 'claude' }], next: 2 } })
+  on('session.cwd', () => ({ value: 'C:\\work\\shop' }))
+  await $.session.start({ cwd: 'C:\\work\\shop', surface: 'desktop', isInteractive: true })
+  const ui = await mountPane($, 'desktop')
+  await ui.press({ key: 'backlog-check' })
+  expect(await ui.find({ type: 'Text', text: '«Проверка бэклога: что ещё актуально»' })).toBeDefined()
+  // The list stays until Claude closes what it finds done.
+  expect(await ui.find({ type: 'Text', text: 'Перевести письма на Zoho' })).toBeDefined()
+})

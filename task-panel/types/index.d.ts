@@ -37,9 +37,17 @@ export type BacklogItem = {
   by: 'person' | 'claude'
 }
 
-/** The project's backlog: its items, and the number the next id takes. */
+/** An item taken off the list: finished, or no longer needed. Kept a while so it can come back. */
+export type ClosedItem = BacklogItem & {
+  /** When it was closed, in `$.clock.now()` ms. */
+  closedAt: number
+  how: 'done' | 'dropped'
+}
+
+/** The project's backlog: its items, the ones closed lately, and the number the next id takes. */
 export type Backlog = {
   items: BacklogItem[]
+  closed: ClosedItem[]
   next: number
 }
 
@@ -62,6 +70,8 @@ declare module 'claude-code' {
       backlog: Backlog
       /** What the person is typing into the backlog field. */
       backlogDraft: string
+      /** Whether "очистить всё" waits for its second press. */
+      backlogClearing: boolean
     }
   }
 }

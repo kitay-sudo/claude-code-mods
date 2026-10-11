@@ -23,9 +23,11 @@ import type { EngineInterface, PromptOrigin, Register, RenderElement } from 'cla
 import type { Backlog, Queued, Step, Task } from '../types'
 import {
   addItems,
+  ageText,
   backlogBriefing,
   bar,
   checkItem,
+  closeItems,
   currentStep,
   emptyBacklog,
   formatElapsed,
@@ -35,7 +37,9 @@ import {
   progress,
   queueHint,
   readiness,
+  isStale,
   removeItems,
+  reopenItem,
   restoreBacklog,
   roman,
   settle,
@@ -110,15 +114,22 @@ const PLAN_SCHEMA = {
 const BACKLOG_DESCRIPTION =
   "Keeps the project's backlog in the Task panel: things to do later, kept between chats. Add items when the user " +
   'says to do something later or next time, or when work is left over at the end of a task; mark items done by id ' +
-  "once they are finished. One short line per item, in the user's language."
+  "once they are finished, and drop the ones no longer needed. One short line per item, in the user's language."
 
 const BACKLOG_SCHEMA = {
   type: 'object',
   properties: {
     add: { type: 'array', items: { type: 'string' }, description: 'New items, one short line each.' },
     done: { type: 'array', items: { type: 'string' }, description: 'Ids of finished items, e.g. b3.' },
+    drop: { type: 'array', items: { type: 'string' }, description: 'Ids of items no longer needed.' },
   },
 }
+
+const CHECK_BACKLOG =
+  'Проверь бэклог проекта: по каждому пункту посмотри код, git и, если нужно, сервер, и реши, сделан ли он уже ' +
+  'или больше не нужен. Сделанные закрой через backlog с done, ненужные с drop, остальные оставь как есть. ' +
+  'В проекте ничего не меняй, только проверь, и коротко напиши, что закрыл и почему.'
+const CLOSED_SHOWN = 3
 
 const task = atom({ plugin: 'task-panel', key: 'task' } as const, null)
 const now = atom({ plugin: 'task-panel', key: 'now' } as const, 0)
@@ -129,6 +140,7 @@ const actions = atom({ plugin: 'task-panel', key: 'actions' } as const, 0)
 const nudged = atom({ plugin: 'task-panel', key: 'nudged' } as const, false)
 const backlog = atom({ plugin: 'task-panel', key: 'backlog' } as const, emptyBacklog() as Backlog)
 const backlogDraft = atom({ plugin: 'task-panel', key: 'backlogDraft' } as const, '')
+const backlogClearing = atom({ plugin: 'task-panel', key: 'backlogClearing' } as const, false)
 
 async function openPane($: EngineInterface): Promise<void> {
   await $.ui.open({ id: PANE, title: PANE_TITLE })
@@ -245,24 +257,46 @@ async function personAddItem($: EngineInterface, text: string): Promise<void> {
   await update($, backlogDraft, () => '')
 }
 
-async function dropItem($: EngineInterface, id: string): Promise<void> {
-  await keepBacklog($, removeItems(await read($, backlog), [id]))
+async function closeItem($: EngineInterface, id: string, how: 'done' | 'dropped'): Promise<void> {
+  await keepBacklog($, closeItems(await read($, backlog), [id], how, await $.clock.now()))
 }
 
-/** The item handed to Claude as the person's own request, and off the list. */
-async function takeItem($: EngineInterface, id: string): Promise<void> {
-  const item = (await read($, backlog)).items.find(one => one.id === id)
-  if (item === undefined) return
-  await dropItem($, id)
-  // The plugin's own prompt passes none of its own hooks: the task (or, while
-  // Claude works, its place in the queue) is set here. It runs once Claude is idle.
-  if (await read($, isWorking)) await enqueue($, item.text, true)
-  else await startTask($, titleOf(item.text), false)
+async function reopen($: EngineInterface, id: string): Promise<void> {
+  await keepBacklog($, reopenItem(await read($, backlog), id))
+}
+
+/** Every item closed as no longer needed: all of them can still come back from the closed list. */
+async function clearAll($: EngineInterface): Promise<void> {
+  await update($, backlogClearing, () => false)
+  const current = await read($, backlog)
+  await keepBacklog($, closeItems(current, current.items.map(item => item.id), 'dropped', await $.clock.now()))
+}
+
+/**
+ * A request handed to Claude as the person's own. The plugin's own prompt
+ * passes none of its own hooks: the task (or, while Claude works, its place in
+ * the queue) is set here. It runs once Claude is idle.
+ */
+async function handOver($: EngineInterface, text: string, title: string): Promise<void> {
+  if (await read($, isWorking)) await enqueue($, title, true)
+  else await startTask($, titleOf(title), false)
   try {
-    await $.prompt.submit({ text: item.text, asUser: true })
+    await $.prompt.submit({ text, asUser: true })
   } catch (error) {
     $.ui.toast(`Не удалось передать Claude: ${String(error)}`)
   }
+}
+
+/** The item handed to Claude, and off the list: it is the task now. */
+async function takeItem($: EngineInterface, id: string): Promise<void> {
+  const item = (await read($, backlog)).items.find(one => one.id === id)
+  if (item === undefined) return
+  await keepBacklog($, removeItems(await read($, backlog), [id]))
+  await handOver($, item.text, item.text)
+}
+
+async function checkRelevance($: EngineInterface): Promise<void> {
+  await handOver($, CHECK_BACKLOG, 'Проверка бэклога: что ещё актуально')
 }
 
 async function goalSet($: EngineInterface, condition: string): Promise<void> {
@@ -356,7 +390,7 @@ export const register: Register = on => {
   }).catch(($, e, next) => next(e))
 
   on('tool.call', { tool: BACKLOG_TOOL }, async ($, e) => {
-    const input = e as unknown as { add?: unknown; done?: unknown }
+    const input = e as unknown as { add?: unknown; done?: unknown; drop?: unknown }
     const errors: string[] = []
     const adds: string[] = []
     for (const one of Array.isArray(input.add) ? input.add : []) {
@@ -366,15 +400,23 @@ export const register: Register = on => {
     }
     const current = await read($, backlog)
     const ids = Array.isArray(input.done) ? input.done.map(String) : []
-    for (const id of ids) if (!current.items.some(item => item.id === id)) errors.push(`нет пункта ${id}`)
+    const drops = Array.isArray(input.drop) ? input.drop.map(String) : []
+    for (const id of [...ids, ...drops]) if (!current.items.some(item => item.id === id)) errors.push(`нет пункта ${id}`)
     if (errors.length > 0) return { deny: `Бэклог не изменён: ${errors.join('; ')}.` }
-    if (adds.length === 0 && ids.length === 0) return { deny: 'Нечего менять: передай add или done.' }
-    const next = addItems(removeItems(current, ids), adds, await $.clock.now(), 'claude')
+    if (adds.length === 0 && ids.length === 0 && drops.length === 0) return { deny: 'Нечего менять: передай add, done или drop.' }
+    const at = await $.clock.now()
+    const next = addItems(closeItems(closeItems(current, ids, 'done', at), drops, 'dropped', at), adds, at, 'claude')
     await keepBacklog($, next)
     // What is new, an item already on the list not counted again.
     const before = new Set(current.items.map(item => item.id))
     const added = next.items.filter(item => !before.has(item.id)).map(item => `[${item.id}] ${item.text}`)
-    const change = [added.length > 0 ? `+${added.length}` : '', ids.length > 0 ? `готово ${ids.length}` : ''].filter(Boolean).join(', ')
+    const change = [
+      added.length > 0 ? `+${added.length}` : '',
+      ids.length > 0 ? `готово ${ids.length}` : '',
+      drops.length > 0 ? `не актуально ${drops.length}` : '',
+    ]
+      .filter(Boolean)
+      .join(', ')
     if (change !== '') $.ui.toast(`Бэклог: ${change}`)
     return { result: `Бэклог проекта: пунктов ${next.items.length}.${added.length > 0 ? ` Добавлено: ${added.join('; ')}.` : ''}` }
   })
@@ -437,6 +479,9 @@ export const register: Register = on => {
     const current = await read($, task)
     const later = await read($, backlog)
     const draft = await read($, backlogDraft)
+    const clearing = await read($, backlogClearing)
+    const nowMs = await $.clock.now()
+    const recentlyClosed = [...later.closed].reverse().slice(0, CLOSED_SHOWN)
     const at = await read($, now)
     const working = await read($, isWorking)
     const waiting = await read($, queue)
@@ -476,27 +521,74 @@ export const register: Register = on => {
         <Box marginBottom={1}>
           <Text dimColor>{later.items.length === 0 ? 'БЭКЛОГ ПРОЕКТА · пусто' : `БЭКЛОГ ПРОЕКТА · ${later.items.length}`}</Text>
         </Box>
+        {later.items.length > 0 &&
+          (clearing ? (
+            <Box flexDirection="column" marginBottom={2}>
+              <Text color="warning" wrap="wrap">
+                Убрать все пункты ({later.items.length}) как неактуальные? Их можно будет вернуть из закрытых.
+              </Text>
+              <Box marginTop={1} gap={1}>
+                <Button key="backlog-clear-yes" label="Да, очистить" onPress={() => void clearAll($)} />
+                <Button key="backlog-clear-no" label="Отмена" onPress={() => void update($, backlogClearing, () => false)} />
+              </Box>
+            </Box>
+          ) : (
+            <Box marginBottom={2} gap={1} flexWrap="wrap">
+              <Button key="backlog-check" label="Проверить, что актуально" onPress={() => void checkRelevance($)} />
+              <Button key="backlog-clear" label="Очистить всё" onPress={() => void update($, backlogClearing, () => true)} />
+            </Box>
+          ))}
         {later.items.length === 0 && (
           <Text dimColor wrap="wrap">
             Скажи Claude "сделаем потом", и пункт появится здесь.
           </Text>
         )}
-        {later.items.map((item, index) => (
-          <Box key={item.id} flexDirection="column" {...(index > 0 ? { marginTop: 1 } : {})}>
-            <Box>
-              <Box width={NUMERAL_WIDTH} flexShrink={0}>
-                <Text dimColor>{index + 1}.</Text>
+        {later.items.map((item, index) => {
+          const isOld = isStale(item.at, nowMs)
+          return (
+            <Box key={item.id} flexDirection="column" {...(index > 0 ? { marginTop: 2 } : {})}>
+              <Box>
+                <Box width={NUMERAL_WIDTH} flexShrink={0}>
+                  <Text dimColor>{index + 1}.</Text>
+                </Box>
+                <Box flexGrow={1}>
+                  <Text wrap="wrap">{item.text}</Text>
+                </Box>
               </Box>
-              <Box flexGrow={1}>
-                <Text wrap="wrap">{item.text}</Text>
+              <Box marginLeft={NUMERAL_WIDTH}>
+                <Text {...(isOld ? { color: 'warning' } : { dimColor: true })}>
+                  {item.by === 'claude' ? 'Claude' : 'ты'} · {ageText(item.at, nowMs)}
+                  {isOld ? ' · давно, ещё нужно?' : ''}
+                </Text>
+              </Box>
+              {/* Real buttons, a row under the text, so they read as buttons. */}
+              <Box marginLeft={NUMERAL_WIDTH} marginTop={1} gap={1} flexWrap="wrap">
+                <Button key={`take-${item.id}`} label="в работу" onPress={() => void takeItem($, item.id)} />
+                <Button key={`done-${item.id}`} label="✓ сделано" onPress={() => void closeItem($, item.id, 'done')} />
+                <Button key={`drop-${item.id}`} label="✕ не актуально" onPress={() => void closeItem($, item.id, 'dropped')} />
               </Box>
             </Box>
-            <Box marginLeft={NUMERAL_WIDTH} gap={2}>
-              <Button key={`take-${item.id}`} plain label="в работу" onPress={() => void takeItem($, item.id)} />
-              <Button key={`drop-${item.id}`} plain label="убрать" onPress={() => void dropItem($, item.id)} />
+          )
+        })}
+        {recentlyClosed.length > 0 && (
+          <Box marginTop={2} flexDirection="column">
+            <Box marginBottom={1}>
+              <Text dimColor>ЗАКРЫТО НЕДАВНО</Text>
             </Box>
+            {recentlyClosed.map((item, index) => (
+              <Box key={`closed-${item.id}`} {...(index > 0 ? { marginTop: 1 } : {})}>
+                <Box flexGrow={1}>
+                  <Text dimColor wrap="wrap">
+                    {item.how === 'done' ? '✓' : '✕'} {item.text}
+                  </Text>
+                </Box>
+                <Box flexShrink={0} marginLeft={1}>
+                  <Button key={`reopen-${item.id}`} label="вернуть" onPress={() => void reopen($, item.id)} />
+                </Box>
+              </Box>
+            ))}
           </Box>
-        ))}
+        )}
         {/* A field drawn taller than its row: a hint under it and a spare row keep it whole at the pane's bottom. */}
         {Input !== undefined && (
           <Box marginTop={2} marginBottom={1} flexDirection="column">
