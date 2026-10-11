@@ -20,6 +20,8 @@ const TOOL = 'mcp__project-passport__passport_update'
 const SETTINGS_KEY = 'settings'
 const DEFAULT_SETTINGS: PassportSettings = { autoOpen: true, askBeforeAdd: true }
 const EMPTY_DRAFT: NoteDraft = { section: 'rules', text: '', error: '' }
+// The notes' numbers stand in a column of this width.
+const NUMBER_WIDTH = 4
 const LANGUAGE_LABELS = { ru: 'RU', en: 'EN', 'ru+en': 'RU+EN' } as const
 
 const FILL_PROMPT =
@@ -137,6 +139,18 @@ async function deleteNote($: EngineInterface, id: string): Promise<void> {
   const note = current.notes.find(one => one.id === id)
   await keep($, removeNote(current, id))
   if (note !== undefined) await tell($, `Пользователь убрал из паспорта проекта: ${note.text}`)
+}
+
+/** Every note of one section taken away, after the second press. */
+async function clearSection($: EngineInterface, section: Section): Promise<void> {
+  await update($, confirming, () => null)
+  const current = await read($, passport)
+  const gone = current.notes.filter(note => note.section === section)
+  let next = current
+  for (const note of gone) next = removeNote(next, note.id)
+  await keep($, next)
+  const title = SECTIONS.find(one => one.id === section)?.title ?? section
+  if (gone.length > 0) await tell($, `Пользователь очистил раздел паспорта "${title}": убрано заметок ${gone.length}.`)
 }
 
 async function fill($: EngineInterface): Promise<void> {
@@ -270,7 +284,24 @@ export const register: Register = on => {
           const notes = current.notes.filter(note => note.section === section.id)
           return (
             <Box key={`sec-${section.id}`} marginTop={2} flexDirection="column">
-              {heading(`h-${section.id}`, section.title.toUpperCase())}
+              {/* The heading, and "Очистить" at its right while the section holds notes. */}
+              <Box key={`h-${section.id}`} marginBottom={1} justifyContent="space-between" alignItems="center">
+                <Text dimColor>{section.title.toUpperCase()}</Text>
+                {notes.length > 0 && waiting !== `clear:${section.id}` && (
+                  <Button key={`clear-${section.id}`} label="Очистить" onPress={() => void update($, confirming, () => `clear:${section.id}`)} />
+                )}
+              </Box>
+              {waiting === `clear:${section.id}` && (
+                <Box flexDirection="column" marginBottom={1}>
+                  <Text color="warning" wrap="wrap">
+                    Убрать все заметки раздела ({notes.length})?
+                  </Text>
+                  <Box marginTop={1} gap={1}>
+                    <Button key={`clear-yes-${section.id}`} label="Да, очистить" onPress={() => void clearSection($, section.id)} />
+                    <Button key={`clear-no-${section.id}`} label="Отмена" onPress={() => void update($, confirming, () => null)} />
+                  </Box>
+                </Box>
+              )}
               {notes.length === 0 && (
                 <Text dimColor wrap="wrap">
                   {sentence(section.hint)}
@@ -289,9 +320,12 @@ export const register: Register = on => {
                   </Box>
                 ) : (
                   <Box key={`row-${note.id}`} {...(index > 0 ? { marginTop: 1 } : {})}>
+                    <Box width={NUMBER_WIDTH} flexShrink={0}>
+                      <Text dimColor>{index + 1}.</Text>
+                    </Box>
                     <Box flexGrow={1}>
                       <Text wrap="wrap">
-                        • {note.text}
+                        {note.text}
                         {note.by === 'claude' ? <Text dimColor> · Claude</Text> : ''}
                       </Text>
                     </Box>
@@ -320,20 +354,16 @@ export const register: Register = on => {
             <Box marginTop={2} flexDirection="column">
               <Text>Заметка</Text>
               <Box marginTop={1} flexDirection="column">
-                {/* The field and its button on one row: the field takes the width, the button stays at its right. */}
+                {/* The field and its button on one row, the button right beside it: the app sizes the field itself. */}
                 <Box gap={1} alignItems="center">
-                  <Box flexGrow={1}>
-                    <Input
-                      key="pp-text"
-                      placeholder="Например: Денису пишем по-английски, коротко и без смайлов"
-                      value={form.text}
-                      onInput={value => void editDraft($, { text: value })}
-                      onSubmit={value => void editDraft($, { text: value }).then(() => personAdd($))}
-                    />
-                  </Box>
-                  <Box flexShrink={0}>
-                    <Button key="pp-add" label="Добавить" onPress={() => void personAdd($)} />
-                  </Box>
+                  <Input
+                    key="pp-text"
+                    placeholder="Например: Денису пишем по-английски, коротко и без смайлов"
+                    value={form.text}
+                    onInput={value => void editDraft($, { text: value })}
+                    onSubmit={value => void editDraft($, { text: value }).then(() => personAdd($))}
+                  />
+                  <Button key="pp-add" label="Добавить" onPress={() => void personAdd($)} />
                 </Box>
                 <Box marginTop={1}>
                   <Text dimColor wrap="wrap">

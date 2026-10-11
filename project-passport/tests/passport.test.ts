@@ -95,14 +95,16 @@ test('the pane opens by itself where there is a passport, and edits it', async (
     const pane = await $.ui.mount({ plugin: 'project-passport', surface, component: 'Pane', requestId: 'project-passport', props: PANE })
     expect(await pane.find({ type: 'Text', text: 'acme-crm' })).toBeDefined()
     expect((await pane.find({ key: 'lang-en' }))?.props.variant).toBe('primary')
-    expect(await pane.find({ type: 'Text', text: /• Клиент: Денис/ })).toBeDefined()
+    expect(await pane.find({ type: 'Text', text: /^Клиент: Денис/ })).toBeDefined()
+    // Numbered, not bulleted.
+    expect(await pane.find({ type: 'Text', text: '1.' })).toBeDefined()
     await pane.unmount()
   }
 
   const pane = await $.ui.mount({ plugin: 'project-passport', surface: 'desktop', component: 'Pane', requestId: 'project-passport', props: PANE })
   await pane.select({ key: 'pp-section', value: 'rules' })
   await pane.input({ key: 'pp-text', text: 'Логотип не трогать', kind: 'submit' })
-  expect(await pane.find({ type: 'Text', text: /• Логотип не трогать/ })).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: /^Логотип не трогать/ })).toBeDefined()
   expect(await brief($)).toContain('- [n2] Логотип не трогать')
 
   await pane.press({ key: 'lang-ru' })
@@ -111,7 +113,7 @@ test('the pane opens by itself where there is a passport, and edits it', async (
   await pane.press({ key: 'del-n1' })
   expect(await pane.find({ type: 'Text', text: /Убрать "Клиент: Денис"/ })).toBeDefined()
   await pane.press({ key: 'yes-n1' })
-  expect(await pane.find({ type: 'Text', text: /• Клиент: Денис/ })).toBeUndefined()
+  expect(await pane.find({ type: 'Text', text: /^Клиент: Денис/ })).toBeUndefined()
 
   await pane.press({ key: 'pp-fill' })
   expect(submitted[0]).toContain('Заполни паспорт этого проекта')
@@ -166,4 +168,37 @@ test('the passport starts with its heading: the app shows its own tabs above it'
   expect(await pane.find({ type: 'Button', key: 'tab-task' })).toBeUndefined()
   expect(await pane.find({ type: 'Button', key: 'tab-passport' })).toBeUndefined()
   expect((await pane.findAll({ type: 'Text' }))[0]?.text).toBe('ПАСПОРТ ПРОЕКТА')
+})
+
+test('"Очистить" empties one section on the second press, and leaves the others', async ($, on) => {
+  const kept = {
+    [STORE_KEY]: {
+      replyLanguage: null,
+      next: 4,
+      notes: [
+        { id: 'n1', section: 'project', text: 'Acme-sync Sync: панель синхронизации цен', at: 1, by: 'claude' },
+        { id: 'n2', section: 'project', text: 'Стек: Next.js и 1С-Битрикс', at: 1, by: 'claude' },
+        { id: 'n3', section: 'rules', text: 'Логотип не трогать', at: 1, by: 'person' },
+      ],
+    },
+  }
+  world(on, kept)
+  await $.session.start({ cwd: 'C:\\work\\acme-crm', surface: 'desktop', isInteractive: true })
+  const pane = await $.ui.mount({ plugin: 'project-passport', surface: 'desktop', component: 'Pane', requestId: 'project-passport', props: PANE })
+
+  // Only a section with notes offers it.
+  expect((await pane.find({ type: 'Button', key: 'clear-project' }))?.text).toBe('Очистить')
+  expect(await pane.find({ type: 'Button', key: 'clear-client' })).toBeUndefined()
+
+  await pane.press({ key: 'clear-project' })
+  expect(await pane.find({ type: 'Text', text: 'Убрать все заметки раздела (2)?' })).toBeDefined()
+  await pane.press({ key: 'clear-yes-project' })
+  expect(await pane.find({ type: 'Text', text: /^Acme-sync Sync/ })).toBeUndefined()
+  expect(await pane.find({ type: 'Text', text: 'Что это, стек, домены, репозиторий.' })).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: /^Логотип не трогать/ })).toBeDefined()
+
+  // "Отмена" keeps everything.
+  await pane.press({ key: 'clear-rules' })
+  await pane.press({ key: 'clear-no-rules' })
+  expect(await pane.find({ type: 'Text', text: /^Логотип не трогать/ })).toBeDefined()
 })
