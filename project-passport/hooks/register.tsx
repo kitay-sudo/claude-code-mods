@@ -139,6 +139,16 @@ async function deleteNote($: EngineInterface, id: string): Promise<void> {
   if (note !== undefined) await tell($, `Пользователь убрал из паспорта проекта: ${note.text}`)
 }
 
+/** The neighbouring pane, through its command: queued by the engine until Claude is idle. */
+async function openNeighbour($: EngineInterface): Promise<void> {
+  try {
+    
+    await $.command.run({ command: 'task-panel' })
+  } catch {
+    $.ui.toast('Не открылось: мод не установлен или выключен')
+  }
+}
+
 async function fill($: EngineInterface): Promise<void> {
   try {
     await $.prompt.submit({ text: FILL_PROMPT, asUser: true })
@@ -169,9 +179,10 @@ export const register: Register = on => {
     return next(e)
   })
 
-  on('command.run', { command: 'passport' }, async $ => {
+  on('command.run', { command: 'passport' }, async ($, e) => {
     await openPane($)
-    return { text: 'Паспорт проекта открыт.' }
+    // Opened from the task panel's tab: no line in the chat.
+    return e.origin.kind === 'plugin' ? {} : { text: 'Паспорт проекта открыт.' }
   })
 
   on('prompt.context', async ($, e, next) => {
@@ -244,6 +255,11 @@ export const register: Register = on => {
 
     return (
       <Box flexDirection="column">
+        {/* The two panes as tabs: the task panel a press away, this one. */}
+        <Box key="tabs" gap={1} marginBottom={2}>
+          <Button key="tab-task" label="📋 Пульт" onPress={() => void openNeighbour($)} />
+          <Button key="tab-passport" variant="primary" label="📒 Паспорт проекта" onPress={() => undefined} />
+        </Box>
         {heading('h-title', 'ПАСПОРТ ПРОЕКТА')}
         <Text>{name}</Text>
 

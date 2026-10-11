@@ -299,6 +299,16 @@ async function checkRelevance($: EngineInterface): Promise<void> {
   await handOver($, CHECK_BACKLOG, 'Проверка бэклога: что ещё актуально')
 }
 
+/** The neighbouring pane, through its command: queued by the engine until Claude is idle. */
+async function openNeighbour($: EngineInterface): Promise<void> {
+  try {
+    if (await read($, isWorking)) $.ui.toast('Паспорт откроется, когда Claude закончит текущий шаг')
+    await $.command.run({ command: 'passport' })
+  } catch {
+    $.ui.toast('Не открылось: мод не установлен или выключен')
+  }
+}
+
 async function goalSet($: EngineInterface, condition: string): Promise<void> {
   const current = await read($, task)
   if (current !== null && current.finishedAt === null) {
@@ -326,9 +336,10 @@ export const register: Register = on => {
     return next(e)
   })
 
-  on('command.run', { command: 'task-panel' }, async $ => {
+  on('command.run', { command: 'task-panel' }, async ($, e) => {
     await openPane($)
-    return { text: 'Пульт задачи открыт.' }
+    // Opened from the passport's tab: no line in the chat.
+    return e.origin.kind === 'plugin' ? {} : { text: 'Пульт задачи открыт.' }
   })
 
   on('command.run', { command: 'goal' }, async ($, e, next) => {
@@ -489,6 +500,14 @@ export const register: Register = on => {
     const width = Math.max(12, e.props.bodyColumns - 1)
 
     // What waits to be read, at the top, with when it will be.
+    // The two panes as tabs: this one, and the passport a press away.
+    const tabs = (
+      <Box key="tabs" gap={1} marginBottom={2}>
+        <Button key="tab-task" variant="primary" label="📋 Пульт" onPress={() => undefined} />
+        <Button key="tab-passport" label="📒 Паспорт проекта" onPress={() => void openNeighbour($)} />
+      </Box>
+    )
+
     const queued =
       waiting.length > 0 ? (
         <Box key="queue" flexDirection="column" marginBottom={1}>
@@ -610,6 +629,7 @@ export const register: Register = on => {
     if (current === null) {
       return (
         <Box flexDirection="column">
+          {tabs}
           {queued}
           <Text dimColor>ЗАДАЧА</Text>
           <Text>не задана</Text>
@@ -646,6 +666,7 @@ export const register: Register = on => {
 
     return (
       <Box flexDirection="column">
+        {tabs}
         {queued}
         <Text dimColor>{current.isGoal ? 'ЦЕЛЬ · /goal' : 'ЗАДАЧА'}</Text>
         <Text wrap="wrap">

@@ -31,14 +31,19 @@ function world(on: On) {
   on('prompt.submit', ($, e) => ({ text: e.text }))
   on('turn.start', ($, e) => ({ turnId: e.turnId }))
   on('turn.complete', ($, e) => ({ text: e.answer }))
-  on('command.run', ($, e) => ({ text: `ran /${e.command}` }))
+  // The slash commands run, a plugin's among them.
+  const ran: string[] = []
+  on('command.run', ($, e) => {
+    ran.push(e.command)
+    return { text: `ran /${e.command}` }
+  })
   on('tool.call', ($, e) => {
     if (e.tool === 'TodoWrite') return { result: { oldTodos: [], newTodos: e.todos } }
     if (e.tool === 'TaskCreate') return { result: { task: { id: String(++ids), subject: e.subject } } }
     if (e.tool === 'TaskUpdate') return { result: { success: true, taskId: e.taskId, updatedFields: ['status'] } }
     return { result: {} as never }
   })
-  return { clock, opened }
+  return { clock, opened, ran }
 }
 
 function mountPane($: Engine, surface: 'terminal' | 'desktop') {
@@ -385,4 +390,22 @@ test('"Проверить, что актуально" hands Claude the check as 
   expect(await ui.find({ type: 'Text', text: '«Проверка бэклога: что ещё актуально»' })).toBeDefined()
   // The list stays until Claude closes what it finds done.
   expect(await ui.find({ type: 'Text', text: 'Перевести письма на Zoho' })).toBeDefined()
+})
+
+test('the panel and the passport are two tabs at the top, each a press from the other', async ($, on) => {
+  const { ran } = world(on)
+  await $.session.start({ cwd: '/w', surface: 'desktop', isInteractive: true })
+  const ui = await mountPane($, 'desktop')
+  expect((await ui.find({ type: 'Button', key: 'tab-task' }))?.props.variant).toBe('primary')
+  expect((await ui.find({ type: 'Button', key: 'tab-passport' }))?.text).toBe('📒 Паспорт проекта')
+  // The tabs come first, above the task.
+  const order = (await ui.findAll({})).map(found => (found.props as { key?: string }).key ?? found.text)
+  expect(order.indexOf('tab-passport')).toBeLessThan(order.indexOf('ЗАДАЧА'))
+
+  await ui.press({ key: 'tab-passport' })
+  expect(ran).toContain('passport')
+
+  // Opened from the passport's tab, the panel leaves no line in the chat.
+  const quiet = await $.command.run({ command: 'task-panel', args: '', origin: { kind: 'plugin', name: 'project-passport' }, presentation: { isFullscreen: false, columns: 120 } })
+  expect(quiet.text).toBeUndefined()
 })
