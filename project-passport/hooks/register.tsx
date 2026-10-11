@@ -163,9 +163,8 @@ export const register: Register = on => {
     await update($, confirming, () => null)
     await $.command.register({ name: 'passport', description: 'Открыть паспорт проекта: клиент, язык общения, правила и тонкости' })
     await $.tool.register({ name: 'passport_update', description: TOOL_DESCRIPTION, inputSchema: TOOL_SCHEMA, isDeferred: false })
-    const current = await read($, passport)
-    const mode = await read($, settings)
-    if (mode.autoOpen && (current.notes.length > 0 || current.replyLanguage !== null)) void openPane($).catch(() => undefined)
+    // Beside the task panel in every chat, an empty one inviting to be filled.
+    if ((await read($, settings)).autoOpen) void openPane($).catch(() => undefined)
     return next(e)
   })
 

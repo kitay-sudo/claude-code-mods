@@ -315,11 +315,12 @@ export const register: Register = on => {
     await $.tool.register({ name: 'plan', description: PLAN_DESCRIPTION, inputSchema: PLAN_SCHEMA, isDeferred: false })
     await $.tool.register({ name: 'backlog', description: BACKLOG_DESCRIPTION, inputSchema: BACKLOG_SCHEMA, isDeferred: false })
     try {
-      // A project with things left for later opens with them in view.
-      if ((await loadBacklog($)).items.length > 0) void openPane($).catch(() => undefined)
+      await loadBacklog($)
     } catch {
       // No project to read from: the backlog starts empty.
     }
+    // In view from the chat's first moment, beside the passport.
+    void openPane($).catch(() => undefined)
     $.clock.every(TICK_MS, () => {
       tick($).catch(() => undefined)
     })

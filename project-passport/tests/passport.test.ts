@@ -50,7 +50,8 @@ const brief = async ($: { prompt: { context: (input: { blocks: [] }) => Promise<
 test('the model writes to the passport after «Записать», and reads it back', async ($, on) => {
   const { asked, opened } = world(on)
   await $.session.start({ cwd: 'C:\\work\\acme-crm', surface: 'desktop', isInteractive: true })
-  expect(opened).toEqual([])
+  // Open beside the task panel even while empty, so it is always at hand.
+  expect(opened).toEqual(['project-passport'])
 
   const written = await $.tool.call({
     tool: TOOL,

@@ -53,8 +53,9 @@ function mountPane($: Engine, surface: 'terminal' | 'desktop') {
 test('a request opens the panel, the todo list fills it, and all done turns it green', async ($, on) => {
   const { clock, opened } = world(on)
   await $.session.start({ cwd: '/w', surface: 'terminal', isInteractive: true })
-  await $.prompt.submit({ text: 'Почини падающие тесты в auth', wait: false, origin: { kind: 'composer' } })
+  // Open from the chat's first moment, before any request.
   expect(opened).toEqual(['task-panel'])
+  await $.prompt.submit({ text: 'Почини падающие тесты в auth', wait: false, origin: { kind: 'composer' } })
 
   await $.turn.start({ text: 'Почини падающие тесты в auth', turnId: 't1' })
   await $.tool.call({
@@ -289,7 +290,7 @@ test('the project backlog outlives the chat: Claude and the person add to it, "�
   })
   await $.session.start({ cwd: 'C:\\work\\shop', surface: 'desktop', isInteractive: true })
 
-  // A project with something left opens the panel, and the model reads the list.
+  // The panel is open from the start, and the model reads the list.
   expect(opened).toEqual(['task-panel'])
   const context = (await $.prompt.context({ blocks: [] })).blocks.find(block => block.name === 'taskPanel')?.text ?? ''
   expect(context).toContain('- [b1] Экспорт заказов в Excel')
