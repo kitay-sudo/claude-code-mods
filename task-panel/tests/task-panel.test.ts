@@ -297,7 +297,9 @@ test('the project backlog outlives the chat: Claude and the person add to it, "�
 
   const ui = await mountPane($, 'desktop')
   const shown = (await ui.findAll({ type: 'Text' })).map(found => found.text)
-  for (const one of ['БЭКЛОГ ПРОЕКТА · 2', 'Экспорт заказов в Excel', 'Починить вёрстку на телефоне']) expect(shown).toContain(one)
+  for (const one of ['БЭКЛОГ ПРОЕКТА · 2', 'Экспорт заказов в Excel', 'Починить вёрстку на телефоне', 'Enter, чтобы добавить']) expect(shown).toContain(one)
+  // The field is not the pane's last row, so it is never cut at the bottom.
+  expect(shown.at(-1)).toBe('Enter, чтобы добавить')
 
   await ui.input({ key: 'backlog-add', text: 'Подключить оплату картой', kind: 'submit' })
   expect(await ui.find({ type: 'Text', text: 'Подключить оплату картой' })).toBeDefined()

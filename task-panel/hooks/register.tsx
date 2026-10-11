@@ -497,8 +497,9 @@ export const register: Register = on => {
             </Box>
           </Box>
         ))}
+        {/* A field drawn taller than its row: a hint under it and a spare row keep it whole at the pane's bottom. */}
         {Input !== undefined && (
-          <Box marginTop={1}>
+          <Box marginTop={2} marginBottom={1} flexDirection="column">
             <Input
               key="backlog-add"
               placeholder="Добавить на потом"
@@ -506,6 +507,7 @@ export const register: Register = on => {
               onInput={value => void update($, backlogDraft, () => value)}
               onSubmit={value => void personAddItem($, value)}
             />
+            <Text dimColor>Enter, чтобы добавить</Text>
           </Box>
         )}
       </Box>
