@@ -1,0 +1,204 @@
+import { expect, mock, test } from 'claude-code/testing'
+import type { On, RenderPropsOf } from 'claude-code'
+
+const RUN = 'mcp__server-panel__run'
+const SAVE = 'mcp__server-panel__save_server'
+const STORE_KEY = 'servers:c:/proj'
+const KEY = 'C:\\Users\\me\\.ssh\\server_panel_ed25519'
+const PROD = { name: 'prod', host: '1.2.3.4', user: 'root', port: 22, dir: '~/app', deploy: 'git pull && docker compose up -d --build' }
+
+const PANE: RenderPropsOf['Pane'] = {
+  title: 'Сервер-пульт',
+  isFocused: false,
+  bodyColumns: 60,
+  placement: 'dock',
+  scroll: { offset: 0, bodyRows: 60 },
+  view: {},
+}
+const BAND: RenderPropsOf['AbovePrompt'] = {
+  hasSurvey: false,
+  isWorking: false,
+  maxRows: 10,
+  bodyColumns: 100,
+  scroll: { offset: 0, bodyRows: 10 },
+  view: {},
+}
+
+const result = (exitCode: number, stdout: string, stderr = '') => ({
+  value: { exitCode, stdout, stderr, isStdoutTruncated: false, isStderrTruncated: false },
+})
+
+// The engine beneath the plugin: a store, a question dialog that answers what
+// the test sets, and a server that lets in the default key or the plugin's own
+// once the connect window has put it there.
+function world(on: On, kept: Record<string, unknown> = {}) {
+  const clock = mock.clock(on, { now: Date.UTC(2026, 9, 11, 9, 30) })
+  mock.store(on, kept)
+  const asked: string[] = []
+  const ran: (readonly string[])[] = []
+  const sim = { reply: 'Выполнить', defaultKey: true, pluginKey: false, keyExists: false }
+  on('session.start', ($, e) => ({ cwd: e.cwd }))
+  on('session.cwd', () => ({ value: 'C:\\proj' }))
+  on('env.get', ($, e) => ({ value: e.name === 'USERPROFILE' ? 'C:\\Users\\me' : undefined }))
+  on('fs.exists', () => ({ value: sim.keyExists }))
+  on('command.register', ($, e) => ({ value: { command: e.name } }))
+  on('tool.register', ($, e) => ({ value: { tool: `mcp__server-panel__${e.name}` } }))
+  on('ui.open', () => ({ value: { isPlaced: true as const } }))
+  on('ui.toast', () => ({ value: undefined }))
+  on('ui.render', { component: 'AbovePrompt' }, () => ({ type: 'Box' }))
+  on('prompt.context', ($, e) => ({ blocks: e.blocks }))
+  // $.ui.ask asks through the AskUserQuestion tool's call.
+  on('tool.call', { tool: 'AskUserQuestion' }, ($, e) => {
+    const question = e.questions[0]?.question ?? ''
+    asked.push(question)
+    return { result: { questions: e.questions, answers: { [question]: sim.reply } } }
+  })
+  on('tool.call', { tool: 'Bash' }, () => ({ result: { stdout: '', stderr: '', interrupted: false } as never }))
+  on('process.run', ($, e) => {
+    const argv = e.argv
+    ran.push(argv)
+    if (argv[0] === 'ssh-keygen') {
+      sim.keyExists = true
+      return result(0, '')
+    }
+    // The connect window: the person typed the password there and the key went in.
+    if (argv[0] === 'powershell') {
+      sim.pluginKey = true
+      return result(0, '')
+    }
+    const isIn = argv.includes('-i') ? sim.pluginKey : sim.defaultKey
+    if (!isIn) return result(255, '', 'root@1.2.3.4: Permission denied (publickey,password).')
+    return result(0, argv.at(-1) === 'true' ? '' : 'ok\n')
+  })
+  return { clock, asked, ran, sim }
+}
+
+const commands = (ran: (readonly string[])[]) => ran.filter(argv => argv[0] === 'ssh' && argv.at(-1) !== 'true').map(argv => argv.at(-1))
+
+test('a server is saved after «Сохранить», then the model runs commands on it after «Выполнить»', async ($, on) => {
+  const { clock, asked, ran, sim } = world(on)
+  await $.session.start({ cwd: 'C:\\proj', surface: 'desktop', isInteractive: true })
+
+  sim.reply = 'Сохранить'
+  const saved = await $.tool.call({ tool: SAVE, name: 'prod', host: '1.2.3.4', user: 'root', dir: '~/app', deploy: PROD.deploy })
+  expect(saved.result).toContain('сохранён')
+  expect(asked[0]).toContain('Сервер «prod»: root@1.2.3.4 · папка ~/app · деплой: git pull && docker compose up -d --build.')
+  await clock.settle()
+
+  const context = await $.prompt.context({ blocks: [] })
+  const brief = context.blocks.find(block => block.name === 'projectServers')?.text ?? ''
+  expect(brief).toContain('- prod: root@1.2.3.4, folder ~/app')
+  expect(brief).toContain('go to the server on your own initiative')
+
+  sim.reply = 'Выполнить'
+  const answer = await $.tool.call({ tool: RUN, server: 'prod', command: 'docker compose ps', why: 'посмотреть контейнеры' })
+  expect(answer.result).toBe('exit code: 0\n--- stdout ---\nok')
+  expect(asked[1]).toBe('Сервер «prod» (root@1.2.3.4), папка ~/app. Зачем: посмотреть контейнеры. Команда: docker compose ps — выполнить?')
+  expect(commands(ran)).toEqual(["cd ~/'app' && docker compose ps"])
+})
+
+test('«Отмена» runs nothing and tells the model so', async ($, on) => {
+  const { ran, sim } = world(on, { [STORE_KEY]: [PROD] })
+  await $.session.start({ cwd: 'C:\\proj', surface: 'terminal', isInteractive: true })
+  sim.reply = 'Отмена'
+  const answer = await $.tool.call({ tool: RUN, server: 'prod', command: 'rm -rf /var/www/old', why: 'убрать старую версию' })
+  expect(answer.result).toBe('Команда не выполнена: пользователь нажал «Отмена».')
+  expect(commands(ran)).toEqual([])
+})
+
+test('an unknown server or a bad address is refused before anything is asked', async ($, on) => {
+  const { asked } = world(on, { [STORE_KEY]: [PROD] })
+  await $.session.start({ cwd: 'C:\\proj', surface: 'terminal', isInteractive: true })
+  expect((await $.tool.call({ tool: RUN, server: 'stage', command: 'ls', why: 'x' })).deny).toContain('Сохранены: prod')
+  expect((await $.tool.call({ tool: SAVE, name: 'evil', host: '-oProxyCommand=calc', user: 'root' })).deny).toContain('host')
+  expect(asked).toEqual([])
+})
+
+test('the row above the prompt shows the server and deploys on a second press', async ($, on) => {
+  const { clock, ran } = world(on, { [STORE_KEY]: { servers: [PROD], settings: { confirm: 'every', band: true } } })
+  await $.session.start({ cwd: 'C:\\proj', surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const band = await $.ui.mount({ plugin: 'server-panel', surface, component: 'AbovePrompt', props: BAND })
+    expect((await band.findAll({ type: 'Text' })).map(found => found.text)).toEqual(
+      expect.arrayContaining(['●', 'prod', expect.stringMatching(/^на связи · \d+ мс$/)]),
+    )
+    expect((await band.findAll({ type: 'Button' })).map(button => button.text)).toEqual(['Деплой', 'Пульт'])
+    await band.unmount()
+  }
+  const band = await $.ui.mount({ plugin: 'server-panel', surface: 'desktop', component: 'AbovePrompt', props: BAND })
+  await band.press({ key: 'sp-band-deploy' })
+  expect(commands(ran)).toEqual([])
+  await band.press({ key: 'sp-band-yes' })
+  expect(commands(ran)).toEqual(["cd ~/'app' && git pull && docker compose up -d --build"])
+  expect(await band.find({ type: 'Text', text: /деплой \d\d:\d\d ✓/ })).toBeDefined()
+})
+
+test('a project without a server offers to connect one', async ($, on) => {
+  world(on)
+  await $.session.start({ cwd: 'C:\\proj', surface: 'terminal', isInteractive: true })
+  const band = await $.ui.mount({ plugin: 'server-panel', surface: 'terminal', component: 'AbovePrompt', props: BAND })
+  expect(await band.find({ type: 'Text', text: '○ сервер не подключён' })).toBeDefined()
+  expect((await band.findAll({ type: 'Button' })).map(button => button.text)).toEqual(['Подключить'])
+})
+
+test('the form connects a new server by itself: own key, a password window, then green', async ($, on) => {
+  const { clock, ran, sim } = world(on)
+  sim.defaultKey = false
+  await $.session.start({ cwd: 'C:\\proj', surface: 'desktop', isInteractive: true })
+  const pane = await $.ui.mount({ plugin: 'server-panel', surface: 'desktop', component: 'Pane', requestId: 'server-panel', props: PANE })
+  await pane.input({ key: 'sp-address', text: 'root@1.2.3.4', kind: 'change' })
+  await pane.input({ key: 'sp-dir', text: '~/app', kind: 'change' })
+  await pane.input({ key: 'sp-deploy', text: PROD.deploy, kind: 'change' })
+  await pane.press({ key: 'sp-save' })
+
+  expect(ran.some(argv => argv[0] === 'ssh-keygen' && argv.includes(KEY))).toBe(true)
+  const window = ran.find(argv => argv[0] === 'powershell')
+  expect(window?.join(' ')).toContain('-EncodedCommand')
+  expect(await pane.find({ type: 'Text', text: /Введи там пароль сервера один раз/ })).toBeDefined()
+
+  await clock.advance(4_000)
+  expect(await pane.find({ type: 'Text', text: '✓ prod подключён: root@1.2.3.4' })).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: /^на связи/ })).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: /ключ пульта/ })).toBeDefined()
+})
+
+test('set to deploy after a push, a git push deploys by itself', async ($, on) => {
+  const { clock, ran } = world(on, { [STORE_KEY]: { servers: [PROD], settings: { confirm: 'every', band: true } } })
+  await $.session.start({ cwd: 'C:\\proj', surface: 'terminal', isInteractive: true })
+  const pane = await $.ui.mount({ plugin: 'server-panel', surface: 'terminal', component: 'Pane', requestId: 'server-panel', props: PANE })
+
+  await $.tool.call({ tool: 'Bash', command: 'git push origin main' })
+  await clock.settle()
+  expect(commands(ran)).toEqual([])
+
+  await pane.press({ key: 'mode-prod' })
+  expect(await pane.find({ type: 'Button', text: 'Деплой: сам после пуша' })).toBeDefined()
+  await $.tool.call({ tool: 'Bash', command: 'git add -A && git commit -m "fix" && git push' })
+  await clock.settle()
+  expect(commands(ran)).toEqual(["cd ~/'app' && git pull && docker compose up -d --build"])
+  expect(await pane.find({ type: 'Text', text: /· авто$/ })).toBeDefined()
+})
+
+test('asking only for risky commands runs the safe ones straight away', async ($, on) => {
+  const { asked, ran, sim } = world(on, { [STORE_KEY]: { servers: [PROD], settings: { confirm: 'risky', band: true } } })
+  await $.session.start({ cwd: 'C:\\proj', surface: 'terminal', isInteractive: true })
+  await $.tool.call({ tool: RUN, server: 'prod', command: 'docker compose ps', why: 'посмотреть' })
+  expect(asked).toEqual([])
+  sim.reply = 'Отмена'
+  await $.tool.call({ tool: RUN, server: 'prod', command: 'docker system prune -af', why: 'почистить' })
+  expect(asked).toHaveLength(1)
+  expect(asked[0]).toContain('⚠ удаляет контейнеры, образы или тома Docker')
+  expect(commands(ran)).toEqual(["cd ~/'app' && docker compose ps"])
+})
+
+test('the pane forgets a server only on a second press', async ($, on) => {
+  const { clock } = world(on, { [STORE_KEY]: [PROD] })
+  await $.session.start({ cwd: 'C:\\proj', surface: 'desktop', isInteractive: true })
+  await clock.settle()
+  const pane = await $.ui.mount({ plugin: 'server-panel', surface: 'desktop', component: 'Pane', requestId: 'server-panel', props: PANE })
+  await pane.press({ key: 'forget-prod' })
+  expect(await pane.find({ type: 'Text', text: /Убрать prod из пульта/ })).toBeDefined()
+  await pane.press({ key: 'yes-forget-prod' })
+  expect(await pane.find({ type: 'Text', text: /^Пока нет/ })).toBeDefined()
+})

@@ -1,0 +1,22 @@
+{
+  "name": "quick-steps",
+  "version": "0.4.1",
+  "description": "После каждого ответа — до трёх следующих запросов над полем ввода: нажал цифру или кликнул, и запрос сразу уходит. Форк next-steps.",
+  "license": "MIT",
+  "userConfig": {
+    "minAnswerChars": {
+      "type": "number",
+      "title": "Shortest answer to suggest after",
+      "description": "Skip suggestions after answers shorter than this many characters.",
+      "required": false,
+      "default": 80
+    },
+    "suggestSkills": {
+      "type": "boolean",
+      "title": "Suggest skills and slash commands",
+      "description": "Tell the suggester which skills and slash commands this session has, so a suggestion can be one of them.",
+      "required": false,
+      "default": true
+    }
+  }
+}
