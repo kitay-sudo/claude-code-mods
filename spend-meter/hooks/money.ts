@@ -34,7 +34,7 @@ export function money(usd: number, rub: number): string {
 }
 
 export function emptySpend(today: string): ProjectSpend {
-  return { usd: 0, days: {}, since: today, budgetRub: null, counted: {} }
+  return { usd: 0, days: {}, since: today, budgetRub: null, counted: {}, time: {}, lastActive: 0 }
 }
 
 const RUNS_KEPT = 200
@@ -62,7 +62,54 @@ export function restoreSpend(raw: unknown, today: string): ProjectSpend {
     since: typeof kept.since === 'string' && /^\d{4}-\d\d-\d\d$/.test(kept.since) ? kept.since : today,
     budgetRub: budget > 0 ? budget : null,
     counted: Object.fromEntries(runs.map(([run, value]) => [run, Number(value)])),
+    time: Object.fromEntries(
+      Object.entries(kept.time ?? {})
+        .filter(([key, value]) => /^\d{4}-\d\d-\d\d$/.test(key) && Number(value) > 0)
+        .map(([key, value]) => [key, Number(value)]),
+    ),
+    lastActive: Number(kept.lastActive) > 0 ? Number(kept.lastActive) : 0,
   }
+}
+
+/** A pause longer than this is a break, not work. */
+export const IDLE_MS = 10 * 60_000
+
+/**
+ * How much of the time since the project's last activity was work: all of it
+ * while Claude works (a computer's sleep cut to the idle limit), a person's
+ * pause only when it was short.
+ */
+export function activeGap(gapMs: number, isWorking: boolean): number {
+  if (!(gapMs > 0)) return 0
+  if (isWorking) return Math.min(gapMs, IDLE_MS)
+  return gapMs <= IDLE_MS ? gapMs : 0
+}
+
+/** The project after one more activity at `now`: the work since the last one added to its day. */
+export function touched(spend: ProjectSpend, now: number, isWorking: boolean): ProjectSpend {
+  const gap = spend.lastActive > 0 ? activeGap(now - spend.lastActive, isWorking) : 0
+  const day = dayKey(now)
+  const time = gap > 0 ? { ...spend.time, [day]: (spend.time[day] ?? 0) + gap } : spend.time
+  return { ...spend, time, lastActive: Math.max(now, spend.lastActive) }
+}
+
+/** Time in the last `count` days up to `today`, in ms. */
+export function timeIn(spend: ProjectSpend, today: string, count: number): number {
+  return lastDays({ ...spend, days: spend.time }, today, count).reduce((sum, one) => sum + one.usd, 0)
+}
+
+export function totalTime(spend: ProjectSpend): number {
+  return Object.values(spend.time).reduce((sum, ms) => sum + ms, 0)
+}
+
+/** Hours and minutes as people say them: "2 ч 10 мин", "45 мин", "3 ч". */
+export function formatDuration(ms: number): string {
+  const minutes = Math.floor(Math.max(0, ms) / 60_000)
+  if (minutes < 1) return 'меньше минуты'
+  if (minutes < 60) return `${minutes} мин`
+  const hours = Math.floor(minutes / 60)
+  const rest = minutes % 60
+  return rest === 0 ? `${hours} ч` : `${hours} ч ${rest} мин`
 }
 
 /** The last `count` days up to `today`, oldest first, zero where nothing was spent. */

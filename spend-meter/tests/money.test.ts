@@ -1,6 +1,24 @@
 import { expect, test } from 'claude-code/testing'
 
-import { addSpend, bar, crossed, emptySpend, formatRub, lastDays, limitLabel, limitShort, money, newSpend, restoreSpend } from '../hooks/money'
+import {
+  IDLE_MS,
+  activeGap,
+  addSpend,
+  bar,
+  crossed,
+  emptySpend,
+  formatDuration,
+  formatRub,
+  lastDays,
+  limitLabel,
+  limitShort,
+  money,
+  newSpend,
+  restoreSpend,
+  timeIn,
+  totalTime,
+  touched,
+} from '../hooks/money'
 
 const NBSP = '\u00a0'
 
@@ -22,13 +40,47 @@ test('spending adds up by day, and the last days fill the gaps with zero', () =>
     { day: '2026-10-10', usd: 0 },
     { day: '2026-10-11', usd: 2 },
   ])
-  expect(restoreSpend({ usd: 'x', days: { bad: 1, '2026-10-11': 2 }, budgetRub: 0, counted: { x: 1, '5': 3 } }, '2026-10-11')).toEqual({
+  expect(
+    restoreSpend(
+      { usd: 'x', days: { bad: 1, '2026-10-11': 2 }, budgetRub: 0, counted: { x: 1, '5': 3 }, time: { bad: 5, '2026-10-11': 60_000 }, lastActive: 'x' },
+      '2026-10-11',
+    ),
+  ).toEqual({
     usd: 0,
     days: { '2026-10-11': 2 },
     since: '2026-10-11',
     budgetRub: null,
     counted: { '5': 3 },
+    time: { '2026-10-11': 60_000 },
+    lastActive: 0,
   })
+})
+
+test('time counts work and short pauses, not breaks, and reads as hours and minutes', () => {
+  const MINUTE = 60_000
+  // While Claude works every minute counts, a computer's sleep only up to the idle limit.
+  expect(activeGap(3 * MINUTE, true)).toBe(3 * MINUTE)
+  expect(activeGap(3 * 60 * MINUTE, true)).toBe(IDLE_MS)
+  // The person reading and thinking counts; a break does not.
+  expect(activeGap(7 * MINUTE, false)).toBe(7 * MINUTE)
+  expect(activeGap(40 * MINUTE, false)).toBe(0)
+
+  const start = new Date(2026, 9, 11, 10, 0).getTime()
+  let spend = emptySpend('2026-10-11')
+  spend = touched(spend, start, false) // the first activity starts the clock
+  spend = touched(spend, start + 5 * MINUTE, true) // Claude worked 5 minutes
+  spend = touched(spend, start + 13 * MINUTE, false) // the person answered after 8
+  spend = touched(spend, start + 13 * MINUTE + 90 * MINUTE, false) // back from lunch: not counted
+  spend = touched(spend, start + 13 * MINUTE + 90 * MINUTE - MINUTE, true) // another chat's older tick: nothing, no going back
+  expect(spend.time).toEqual({ '2026-10-11': 13 * MINUTE })
+  expect(spend.lastActive).toBe(start + 103 * MINUTE)
+  expect(timeIn(spend, '2026-10-11', 7)).toBe(13 * MINUTE)
+  expect(totalTime(spend)).toBe(13 * MINUTE)
+
+  expect(formatDuration(30_000)).toBe('меньше минуты')
+  expect(formatDuration(45 * MINUTE)).toBe('45 мин')
+  expect(formatDuration(3 * 60 * MINUTE)).toBe('3 ч')
+  expect(formatDuration(130 * MINUTE)).toBe('2 ч 10 мин')
 })
 
 test('warning marks fire once as a value passes them', () => {

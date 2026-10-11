@@ -125,7 +125,7 @@ test('the rate comes from the option, and a budget warns as it fills', { options
   expect(toasts.some(text => text.startsWith('Бюджет проекта: потрачено 90%'))).toBe(true)
   expect(await pane.find({ type: 'Text', text: new RegExp(`^бюджет 1${NBSP}000${NBSP}₽ ▰+▱+ 90%$`) })).toBeDefined()
   await pane.input({ key: 'sm-budget', text: 'много', kind: 'submit' })
-  expect(await pane.find({ type: 'Text', text: /Бюджет — число рублей/ })).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: /Бюджет: число рублей/ })).toBeDefined()
 })
 
 test('the spend sits at the right of the first line, the server below, the suggestions last', async ($, on) => {
@@ -154,4 +154,37 @@ test('the spend sits at the right of the first line, the server below, the sugge
   expect(drawn.children?.[1]?.props.justifyContent).toBe('space-between')
   expect(drawn.children?.[2]?.props.marginTop).toBe(1)
   expect(drawn.children?.[3]?.props.marginTop).toBe(1)
+})
+
+test('time on the project: Claude at work and short pauses count, a break does not', async ($, on) => {
+  const MINUTE = 60_000
+  const { clock } = world(on)
+  on('prompt.submit', ($, e) => ({ text: e.text }))
+  on('turn.start', ($, e) => ({ turnId: e.turnId }))
+  on('prompt.context', ($, e) => ({ blocks: e.blocks }))
+  await $.session.start({ cwd: 'C:\\work\\acme-sync', surface: 'desktop', isInteractive: true })
+  await clock.settle()
+  const say = (text: string) => $.prompt.submit({ text, wait: false, origin: { kind: 'composer' } })
+
+  await say('Сделай форму заявки')
+  await $.turn.start({ text: 'Сделай форму заявки', turnId: 't1' })
+  await clock.advance(20 * MINUTE) // Claude works
+  await turn($)
+  await clock.advance(5 * MINUTE) // the person reads and thinks
+  await say('Теперь кнопку звонка')
+  await $.turn.start({ text: 'Теперь кнопку звонка', turnId: 't2' })
+  await clock.advance(10 * MINUTE)
+  await turn($)
+  await clock.advance(60 * MINUTE) // lunch: not work
+  await say('Ещё поправь отступы')
+
+  const band = await $.ui.mount({ plugin: 'spend-meter', surface: 'desktop', component: 'AbovePrompt', props: BAND })
+  expect(await band.find({ type: 'Text', text: / за 35 мин$/ })).toBeDefined()
+  const pane = await $.ui.mount({ plugin: 'spend-meter', surface: 'desktop', component: 'Pane', requestId: 'spend-meter', props: PANE })
+  expect(await pane.find({ type: 'Text', text: 'сегодня 35 мин · 7 дней 35 мин' })).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: /· 35 мин$/ })).toBeDefined()
+  const context = (await $.prompt.context({ blocks: [] })).blocks.find(block => block.name === 'projectTime')?.text ?? ''
+  expect(context).toContain('today 35 мин, last 7 days 35 мин')
+  // Nothing on the pane is bold.
+  expect((await pane.findAll({ type: 'Text' })).filter(found => found.props.bold === true)).toEqual([])
 })

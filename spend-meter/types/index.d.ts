@@ -13,6 +13,10 @@ export type ProjectSpend = {
    * one only for what it costs after.
    */
   counted: Record<string, number>
+  /** Time spent on the project by local day, in ms: Claude at work, and the person's pauses up to the idle limit. */
+  time: Record<string, number>
+  /** The last activity in any chat of the project, in ms: a gap is counted once, however many chats run. */
+  lastActive: number
 }
 
 /** One usage window of the subscription, as the last response reported it. */
@@ -53,6 +57,8 @@ declare module 'claude-code' {
       warned: string[]
       draft: SpendDraft
       project: string
+      /** Whether a turn of this chat is running. */
+      isWorking: boolean
     }
   }
 }
