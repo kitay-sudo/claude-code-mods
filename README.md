@@ -56,23 +56,52 @@
 
 3. Пароли, ключи и токены. Их здесь нет и не будет.
 
-<details>
-<summary>Для Claude: как ставить и обновлять</summary>
+## Для Claude
 
-Всё делай сам в PowerShell, человеку отвечай коротко и по-русски.
+Всё делай сам в PowerShell. Человеку отвечай коротко и по-русски.
 
-Установка:
+### Установка
 
-1. Проверь, что есть `git` и `gh`. Если нет, спроси разрешения и поставь: `winget install --id Git.Git -e`, `winget install --id GitHub.cli -e`.
-2. `gh auth status`. Если вход не выполнен, попроси человека самого запустить `gh auth login`. Логин и пароль не спрашивай и не вводи.
-3. Склонируй в `$env:USERPROFILE\.claude\mods`: `gh repo clone kitay-sudo/claude-code-mods "$env:USERPROFILE\.claude\mods"`. Если папка уже есть и это не этот репозиторий, сначала спроси.
-4. Запусти `powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\.claude\mods\install.ps1"`. Он подключает маркетплейс `local-mods` и ставит все моды с `--scope user`. Повторный запуск безопасен.
-5. Если человек принёс файлы `*_local-mods-*.json`, положи их в `$env:USERPROFILE\.claude\plugins\store`. Имена менять не надо: хэш в имени считается из `<мод>@local-mods`.
-6. Попроси открыть новый чат и проверить блок над полем ввода и команды /report, /passport, /spend, /server, /task-panel.
-7. Если в терминальном `claude` моды не грузятся, нужен флаг раннего доступа `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`. Это постоянная настройка, поэтому спроси перед тем, как ставить: `[Environment]::SetEnvironmentVariable('CLAUDE_CODE_ENABLE_FUNCTION_HOOKS', '1', 'User')`.
+**1. Git и GitHub CLI.** Если чего-то нет, спроси разрешения и поставь:
 
-Обновление: `git -C "$env:USERPROFILE\.claude\mods" pull`, потом `install.ps1`, потом новый чат.
+```powershell
+winget install --id Git.Git -e
+winget install --id GitHub.cli -e
+```
 
-Правка мода: правила в `CLAUDE.md`.
+**2. Вход в GitHub.** Проверь `gh auth status`. Если вход не выполнен, попроси человека самого запустить `gh auth login`. Логин и пароль не спрашивай и не вводи.
 
-</details>
+**3. Скачать моды.** Если папка уже есть и это не этот репозиторий, сначала спроси.
+
+```powershell
+gh repo clone kitay-sudo/claude-code-mods "$env:USERPROFILE\.claude\mods"
+```
+
+**4. Поставить все моды.** Скрипт подключает маркетплейс `local-mods` и ставит моды во все чаты. Повторный запуск безопасен.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\.claude\mods\install.ps1"
+```
+
+**5. Данные со старого компьютера.** Если человек принёс файлы `*_local-mods-*.json`, положи их в `%USERPROFILE%\.claude\plugins\store`. Имена менять не надо.
+
+**6. Проверка.** Попроси открыть новый чат. Над полем ввода должен быть блок с кэшем и расходом, а команды /report, /passport, /spend, /server и /task-panel должны открываться.
+
+**7. Если моды не видны в терминальном `claude`.** Нужен флаг раннего доступа. Это постоянная настройка, поэтому сначала спроси:
+
+```powershell
+[Environment]::SetEnvironmentVariable('CLAUDE_CODE_ENABLE_FUNCTION_HOOKS', '1', 'User')
+```
+
+### Обновление
+
+```powershell
+git -C "$env:USERPROFILE\.claude\mods" pull
+powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\.claude\mods\install.ps1"
+```
+
+Потом попроси открыть новый чат.
+
+### Правка мода
+
+Правила в `CLAUDE.md`.
