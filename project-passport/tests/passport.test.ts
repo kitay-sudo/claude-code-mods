@@ -126,7 +126,7 @@ test('the pane reads in sections: no long dashes, labels above the fields, setti
   const texts = (await pane.findAll({ type: 'Text' })).map(found => found.text)
 
   expect(texts.filter(text => /[—–]/.test(text))).toEqual([])
-  for (const one of ['Кто клиент, как и на каком языке с ним общаться.', 'Не выбран. Нажми нужный.', 'Раздел', 'Заметка', 'Открывать при старте чата', 'Записи Claude']) {
+  for (const one of ['Кто клиент, как и на каком языке с ним общаться, договорённости и деньги.', 'Не выбран. Нажми нужный.', 'Раздел', 'Заметка', 'Открывать при старте чата', 'Записи Claude']) {
     expect(texts).toContain(one)
   }
   // The fields carry no labels of their own: theirs stand above them.
@@ -194,11 +194,31 @@ test('"Очистить" empties one section on the second press, and leaves the
   expect(await pane.find({ type: 'Text', text: 'Убрать все заметки раздела (2)?' })).toBeDefined()
   await pane.press({ key: 'clear-yes-project' })
   expect(await pane.find({ type: 'Text', text: /^Acme-sync Sync/ })).toBeUndefined()
-  expect(await pane.find({ type: 'Text', text: 'Что это, стек, домены, репозиторий.' })).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: 'Одной строкой, что это за проект для клиента. Стек и устройство живут в CLAUDE.md.' })).toBeDefined()
   expect(await pane.find({ type: 'Text', text: /^Логотип не трогать/ })).toBeDefined()
 
   // "Отмена" keeps everything.
   await pane.press({ key: 'clear-rules' })
   await pane.press({ key: 'clear-no-rules' })
   expect(await pane.find({ type: 'Text', text: /^Логотип не трогать/ })).toBeDefined()
+})
+
+test('the client in the passport, the code in CLAUDE.md: the model is told, and "Разобрать" sorts both', async ($, on) => {
+  const { submitted } = world(on)
+  await $.session.start({ cwd: 'C:\\work\\acme-crm', surface: 'desktop', isInteractive: true })
+  // Told in every chat, with an empty passport too.
+  const told = await brief($)
+  expect(told).toContain("belong in the project's CLAUDE.md, which is in git")
+  expect(told).toContain('never in CLAUDE.md, README or any other file of the repository')
+
+  const pane = await $.ui.mount({ plugin: 'project-passport', surface: 'desktop', component: 'Pane', requestId: 'project-passport', props: PANE })
+  await pane.press({ key: 'pp-fill' })
+  expect(submitted[0]).toContain('Стек, команды и правила по коду не переписывай')
+  await pane.press({ key: 'pp-sort' })
+  expect(submitted[1]).toContain('Разбери паспорт проекта и CLAUDE.md')
+  expect(submitted[1]).toContain('Сначала покажи мне списком, что куда переносишь')
+
+  // A passport with notes tells it as well.
+  await $.tool.call({ tool: TOOL, add: [{ section: 'client', text: 'Клиент: Денис' }] })
+  expect(await brief($)).toContain('Do not copy into the passport what README or CLAUDE.md already say.')
 })

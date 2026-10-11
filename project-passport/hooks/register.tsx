@@ -25,15 +25,26 @@ const NUMBER_WIDTH = 4
 const LANGUAGE_LABELS = { ru: 'RU', en: 'EN', 'ru+en': 'RU+EN' } as const
 
 const FILL_PROMPT =
-  'Заполни паспорт этого проекта: прочитай README, файлы пакета, скрипты деплоя, git remote и CLAUDE.md, ' +
-  'запиши найденное через passport_update по разделам, а то, что из файлов не понять (кто клиент и на каком ' +
-  'языке ему писать), спроси у меня.'
+  'Заполни паспорт этого проекта. Прочитай README, CLAUDE.md, файлы пакета, скрипты деплоя и git remote, но в паспорт ' +
+  'через passport_update запиши только то, чего в этих файлах нет и что нужно знать про клиента: кто клиент, как и на ' +
+  'каком языке с ним общаться, договорённости, где что лежит (админки, серверы, документы, без паролей). Про проект ' +
+  'одной строкой. Стек, команды и правила по коду не переписывай, они уже в файлах. Чего не найдёшь, спроси у меня.'
+
+const SORT_PROMPT =
+  'Разбери паспорт проекта и CLAUDE.md. Всё про клиента (кто он, язык и тон общения, деньги, договорённости, личные ' +
+  'тонкости) должно быть в паспорте и не должно лежать в CLAUDE.md, README и других файлах репозитория: клиент может ' +
+  'видеть репозиторий. Всё про код и работу с репозиторием (сборка, тесты, устройство, что не трогать в коде) должно ' +
+  'быть в CLAUDE.md, а не в паспорте. Дубли того, что уже есть в README, из паспорта убери. Сначала покажи мне списком, ' +
+  'что куда переносишь и что убираешь, и подожди моего "да". Потом перенеси: паспорт через passport_update, CLAUDE.md ' +
+  'правь сам. Если CLAUDE.md нет, а перенести в него есть что, создай его.'
 
 const TOOL_DESCRIPTION =
   "Changes this project's passport: the durable facts and nuances the user wants you to know in every " +
   'conversation (who the client is and how to talk to them, what the project is, its rules, where things ' +
   'live). Add notes, remove them by id, or set the language messages to the client are written in. One short ' +
-  'fact per note, in the user’s language. Never a password, key or token. The user confirms the change.'
+  'fact per note, in the user’s language. Never a password, key or token. The user confirms the change. ' +
+  'Only what concerns the client and the arrangements and what the repository files do not say: rules about the ' +
+  "code belong in the project's CLAUDE.md instead."
 
 const TOOL_SCHEMA = {
   type: 'object',
@@ -153,9 +164,10 @@ async function clearSection($: EngineInterface, section: Section): Promise<void>
   if (gone.length > 0) await tell($, `Пользователь очистил раздел паспорта "${title}": убрано заметок ${gone.length}.`)
 }
 
-async function fill($: EngineInterface): Promise<void> {
+/** A request handed to Claude as the person's own. */
+async function askClaude($: EngineInterface, text: string): Promise<void> {
   try {
-    await $.prompt.submit({ text: FILL_PROMPT, asUser: true })
+    await $.prompt.submit({ text, asUser: true })
   } catch (error) {
     $.ui.toast(`Не удалось попросить Claude: ${String(error)}`)
   }
@@ -383,12 +395,18 @@ export const register: Register = on => {
         )}
 
         <Box marginTop={2} flexDirection="column">
-          {heading('h-fill', 'ЗАПОЛНИТЬ ИЗ ПРОЕКТА')}
+          {heading('h-fill', 'ИЗ ПРОЕКТА')}
           <Text dimColor wrap="wrap">
-            Claude прочитает README, файлы проекта, деплой и git и сам запишет, что найдёт. Чего из файлов не понять, спросит у тебя.
+            Заполнить: Claude прочитает README, CLAUDE.md, деплой и git и запишет сюда то, чего в файлах нет. Чего не найдёт, спросит у тебя.
           </Text>
           <Box marginTop={1}>
-            <Button key="pp-fill" variant="primary" label={isEmpty ? 'Заполнить из проекта' : 'Дополнить из проекта'} onPress={() => void fill($)} />
+            <Text dimColor wrap="wrap">
+              Разобрать: всё про клиента переедет из CLAUDE.md сюда, всё про код отсюда в CLAUDE.md. Сначала Claude покажет список и спросит.
+            </Text>
+          </Box>
+          <Box marginTop={1} gap={1} flexWrap="wrap">
+            <Button key="pp-fill" variant="primary" label={isEmpty ? 'Заполнить из проекта' : 'Дополнить из проекта'} onPress={() => void askClaude($, FILL_PROMPT)} />
+            <Button key="pp-sort" label="Разобрать с CLAUDE.md" onPress={() => void askClaude($, SORT_PROMPT)} />
           </Box>
         </Box>
 

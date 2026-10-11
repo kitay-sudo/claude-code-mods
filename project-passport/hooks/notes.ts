@@ -4,9 +4,9 @@
 import type { Note, Passport, Section } from '../types'
 
 export const SECTIONS: readonly { id: Section; title: string; hint: string }[] = [
-  { id: 'client', title: 'Клиент и общение', hint: 'кто клиент, как и на каком языке с ним общаться' },
-  { id: 'project', title: 'О проекте', hint: 'что это, стек, домены, репозиторий' },
-  { id: 'rules', title: 'Правила и тонкости', hint: 'что делать и чего не трогать' },
+  { id: 'client', title: 'Клиент и общение', hint: 'кто клиент, как и на каком языке с ним общаться, договорённости и деньги' },
+  { id: 'project', title: 'О проекте', hint: 'одной строкой, что это за проект для клиента. Стек и устройство живут в CLAUDE.md' },
+  { id: 'rules', title: 'Правила и тонкости', hint: 'договорённости с клиентом: что можно и чего нельзя. Правила по коду живут в CLAUDE.md' },
   { id: 'places', title: 'Где что лежит', hint: 'админка, серверы, документы, тестовые входы без паролей' },
 ]
 
@@ -78,15 +78,25 @@ export function restore(raw: unknown): Passport {
 }
 
 /** The passport as the model reads it at the start of every conversation. */
+/**
+ * Where a fact goes: the code in CLAUDE.md, which is in git; the client in the
+ * passport, which is not, since the client may see the repository.
+ */
+export const WHERE =
+  "Where things go: rules about the code and how to work with the repository (build, tests, structure, what not to touch in the code) belong in the project's CLAUDE.md, which is in git. " +
+  'Everything about the client (who they are, language and tone, money, arrangements, private nuances) belongs in the project passport, ' +
+  'never in CLAUDE.md, README or any other file of the repository: the client may see the repository. ' +
+  'Do not copy into the passport what README or CLAUDE.md already say.'
+
 export function briefing(passport: Passport, tool: string): string {
   const howToAdd =
-    `When you learn a durable fact or nuance of this project (who the client is and how to talk to them, a rule, ` +
-    `where something lives), or the user says «запомни», add it with ${tool}. Never store passwords, keys or tokens.`
+    `When you learn a durable fact about the client or the arrangements (who the client is and how to talk to them, money, ` +
+    `a private nuance, where something lives), or the user says «запомни», add it with ${tool}. Never store passwords, keys or tokens.`
   if (passport.notes.length === 0 && passport.replyLanguage === null) {
     return (
-      'This project has no passport yet (project-passport). When the user asks to fill it, read the project ' +
-      '(README, package files, deploy scripts, git remote, CLAUDE.md) and add what you find; ask the user only ' +
-      `for what the files cannot tell (the client, the language to write to them in). ${howToAdd}`
+      'This project has no passport yet (project-passport). When the user asks to fill it, add only what the repository ' +
+      'files do not tell: the client, how to talk to them, arrangements, where things live; ask the user for what you cannot find. ' +
+      `${howToAdd}\n${WHERE}`
     )
   }
   const lines = ['Project passport (project-passport): facts and nuances of this project. Follow them.']
@@ -99,7 +109,7 @@ export function briefing(passport: Passport, tool: string): string {
     lines.push(`${section.title}:`)
     for (const note of notes) lines.push(`- [${note.id}] ${note.text}`)
   }
-  lines.push(howToAdd)
+  lines.push(howToAdd, WHERE)
   return lines.join('\n')
 }
 
