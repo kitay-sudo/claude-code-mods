@@ -73,6 +73,11 @@ function skillList(commands: readonly CommandInfo[]): string {
   return named.length === 0 ? described.join('\n') : [...described, named.join(' ')].join('\n')
 }
 
+/** The person always sees which of the offered choices the model would take. */
+const RECOMMEND_RULE =
+  'When you offer the user several options or next steps, in a reply or as AskUserQuestion options, mark exactly ' +
+  'one as the one you recommend: put it first and add "(Рекомендую)" to it (in AskUserQuestion, to its label).'
+
 function forkPrompt(skills: string): string {
   return (
     'Do not continue the task. Instead, predict what the user is most likely to ask you next, ' +
@@ -80,7 +85,8 @@ function forkPrompt(skills: string): string {
     'to this conversation: name the file, test, PR, or follow-up they would actually type), each at most ' +
     `${PROMPT_MAX} characters. Pressing one sends it at once, so each must be complete as written. Prefer the ` +
     'obvious next action (run the tests, commit, fix the thing you flagged, do the same for X) over generic ' +
-    'ones. If the conversation is clearly finished or nothing useful comes to mind, return an empty list. ' +
+    'ones. Order them best first: the first one is the step you recommend. ' +
+    'If the conversation is clearly finished or nothing useful comes to mind, return an empty list. ' +
     "When the user's last request is a large or vague piece of work and no goal with \"done when\" criteria has " +
     'been agreed yet, make the first suggestion a request to agree on them before any work starts (in Russian: ' +
     '"Сначала уточним цель и критерии готовности").\n\n' +
@@ -155,6 +161,11 @@ export const register: Register = (on, options) => {
   })
 
   // Turn over: ask the fork, detached, so the turn's completion never waits on it.
+  on('prompt.context', async ($, e, next) => {
+    const context = await next(e)
+    return { ...context, blocks: [...context.blocks, { name: 'nextSteps', text: RECOMMEND_RULE }] }
+  })
+
   on('turn.complete', async ($, e, next) => {
     const result = await next(e)
     if (e.agentId !== undefined || e.reason !== 'answer' || e.answer.trim().length < minTurnChars) return result
@@ -202,8 +213,10 @@ export const register: Register = (on, options) => {
       <Box key="seg-4-steps" flexDirection="column">
         <Text dimColor>→ дальше:</Text>
         {view.items.map((item, index) => (
-          <Box marginLeft={2}>
+          <Box marginLeft={2} gap={1}>
             <Button key={`s${index}`} hotkey={String(index + 1)} plain label={item} onPress={() => void send($, item)} />
+            {/* The first is the one the model recommends: the mark is shown, not sent. */}
+            {index === 0 && <Text color="success">(Рекомендую)</Text>}
           </Box>
         ))}
         <Box marginLeft={2}>

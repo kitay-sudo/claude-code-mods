@@ -18,9 +18,10 @@
 // field; "в работу" hands an item to Claude.
 
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, PromptOrigin, Register, RenderElement } from 'claude-code'
+import type { EngineInterface, PromptOrigin, Register, RenderElement, RenderSurface } from 'claude-code'
 
-import type { Backlog, Intent, Queued, Step, Task } from '../types'
+import type { Backlog, Chain, Intent, Queued, Step, Task } from '../types'
+import { INTENT_DIR, STAGES, chainBriefing, chainOf, dayOf, intentPrompt, newestOpen, planPrompt, specPrompt, stageOf, workPrompt } from './chain'
 import {
   addItems,
   ageText,
@@ -168,6 +169,8 @@ const nudged = atom({ plugin: 'task-panel', key: 'nudged' } as const, false)
 const backlog = atom({ plugin: 'task-panel', key: 'backlog' } as const, emptyBacklog() as Backlog)
 const backlogDraft = atom({ plugin: 'task-panel', key: 'backlogDraft' } as const, '')
 const backlogClearing = atom({ plugin: 'task-panel', key: 'backlogClearing' } as const, false)
+const chain = atom({ plugin: 'task-panel', key: 'chain' } as const, null as Chain | null)
+const bigDraft = atom({ plugin: 'task-panel', key: 'bigDraft' } as const, '')
 
 async function openPane($: EngineInterface): Promise<void> {
   await $.ui.open({ id: PANE, title: PANE_TITLE })
@@ -305,6 +308,74 @@ async function clearAll($: EngineInterface): Promise<void> {
  * passes none of its own hooks: the task (or, while Claude works, its place in
  * the queue) is set here. It runs once Claude is idle.
  */
+async function chainKey($: EngineInterface): Promise<string> {
+  const cwd = await $.session.cwd()
+  return `intent:${cwd.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()}`
+}
+
+/** The project's open big task: the newest folder under intent/ not closed, and its files. */
+async function loadChain($: EngineInterface): Promise<void> {
+  try {
+    if (!(await $.fs.exists(INTENT_DIR))) {
+      await update($, chain, () => null)
+      return
+    }
+    const folders = (await $.fs.list(INTENT_DIR)).filter(entry => entry.kind === 'dir').map(entry => entry.name)
+    const kept = (await $.store.get(await chainKey($))) as { closed?: unknown } | undefined
+    const closed = Array.isArray(kept?.closed) ? kept.closed.map(String) : []
+    const name = newestOpen(folders, closed)
+    if (name === null) {
+      await update($, chain, () => null)
+      return
+    }
+    const files = (await $.fs.list(`${INTENT_DIR}/${name}`)).filter(entry => entry.kind === 'file').map(entry => entry.name)
+    await update($, chain, () => chainOf(name, files))
+  } catch {
+    await update($, chain, () => null)
+  }
+}
+
+/** A big task begins: the interview, then INTENT.md. */
+async function startIntent($: EngineInterface, task: string): Promise<void> {
+  const today = dayOf(await $.clock.now())
+  await update($, bigDraft, () => '')
+  await handOver($, intentPrompt(task, today), task.trim() === '' ? 'Большая задача: намерение' : `Намерение: ${task.trim()}`)
+}
+
+/** The open big task's next stage, handed to Claude. */
+async function nextStage($: EngineInterface, stage: 'spec' | 'plan' | 'work'): Promise<void> {
+  const open = await read($, chain)
+  if (open === null) return
+  const text = stage === 'spec' ? specPrompt(open) : stage === 'plan' ? planPrompt(open) : workPrompt(open)
+  const title = stage === 'spec' ? 'Спецификация' : stage === 'plan' ? 'План' : 'Работа'
+  await handOver($, text, `${title}: ${open.name}`)
+}
+
+/** The work's request on the clipboard, for a fresh chat that starts from the files. */
+async function copyWork($: EngineInterface, surface: RenderSurface): Promise<void> {
+  const open = await read($, chain)
+  if (open === null) return
+  let isCopied = false
+  try {
+    isCopied = (await $.ui.copy({ text: workPrompt(open), surface })).isCopied
+  } catch {
+    isCopied = false
+  }
+  $.ui.toast(isCopied ? 'Скопировано. Открой новый чат и вставь (Ctrl+V).' : 'Не скопировалось. Нажми "Работать здесь".')
+}
+
+/** The big task closed: its folder stays, the panel stops following it. */
+async function closeChain($: EngineInterface): Promise<void> {
+  const open = await read($, chain)
+  if (open === null) return
+  const key = await chainKey($)
+  const kept = (await $.store.get(key)) as { closed?: unknown } | undefined
+  const closed = Array.isArray(kept?.closed) ? kept.closed.map(String) : []
+  await $.store.set(key, { closed: [...closed.filter(name => name !== open.name), open.name].slice(-100) })
+  await loadChain($)
+  $.ui.toast(`Большая задача закрыта. Файлы остались в ${open.dir}.`)
+}
+
 async function handOver($: EngineInterface, text: string, title: string): Promise<void> {
   if (await read($, isWorking)) await enqueue($, title, true)
   else await startTask($, titleOf(title), false)
@@ -340,6 +411,8 @@ async function goalSet($: EngineInterface, condition: string): Promise<void> {
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'task-panel', description: 'Открыть пульт задачи: план, готовность и время' })
+    await $.command.register({ name: 'intent', description: 'Большая задача через намерение: интервью, INTENT.md, спецификация, план' })
+    await loadChain($)
     await $.tool.register({ name: 'plan', description: PLAN_DESCRIPTION, inputSchema: PLAN_SCHEMA, isDeferred: false })
     await $.tool.register({ name: 'backlog', description: BACKLOG_DESCRIPTION, inputSchema: BACKLOG_SCHEMA, isDeferred: false })
     try {
@@ -353,6 +426,11 @@ export const register: Register = on => {
       tick($).catch(() => undefined)
     })
     return next(e)
+  })
+
+  on('command.run', { command: 'intent' }, async ($, e) => {
+    await startIntent($, e.args)
+    return {}
   })
 
   on('command.run', { command: 'task-panel' }, async ($, e) => {
@@ -401,13 +479,18 @@ export const register: Register = on => {
       await update($, isWorking, () => false)
       await update($, idleSince, () => at)
       await finishTask($, true)
+      // A turn may have written the big task's next file.
+      await loadChain($)
     }
     return result
   })
 
   on('prompt.context', async ($, e, next) => {
     const context = await next(e)
-    const text = `${BRIEFING}\n\n${backlogBriefing(await read($, backlog), BACKLOG_TOOL)}`
+    const open = await read($, chain)
+    const text = [BRIEFING, backlogBriefing(await read($, backlog), BACKLOG_TOOL), open === null ? '' : chainBriefing(open)]
+      .filter(Boolean)
+      .join('\n\n')
     return { ...context, blocks: [...context.blocks, { name: 'taskPanel', text }] }
   })
 
@@ -518,6 +601,76 @@ export const register: Register = on => {
     const later = await read($, backlog)
     const draft = await read($, backlogDraft)
     const clearing = await read($, backlogClearing)
+    const big = await read($, chain)
+    const bigText = await read($, bigDraft)
+    const bigStage = big === null ? null : stageOf(big)
+    const bigAt = bigStage === null ? -1 : STAGES.findIndex(stage => stage.id === bigStage)
+
+    // A big task through files: a field and a button to start one, else its stages and the next one's button.
+    const bigBlock = (
+      <Box key="big" flexDirection="column" marginTop={2}>
+        <Box marginBottom={1}>
+          <Text dimColor>{big === null ? 'БОЛЬШАЯ ЗАДАЧА' : `БОЛЬШАЯ ЗАДАЧА · ${big.name}`}</Text>
+        </Box>
+        {big === null ? (
+          <Box flexDirection="column">
+            <Text dimColor wrap="wrap">
+              Для большой работы: сначала намерение из интервью, потом спецификация и план, а код в новом чате по этим файлам.
+            </Text>
+            <Box marginTop={1} gap={1} alignItems="center">
+              {Input !== undefined && (
+                <Input
+                  key="big-text"
+                  placeholder="Что сделать"
+                  value={bigText}
+                  onInput={value => void update($, bigDraft, () => value)}
+                  onSubmit={value => void startIntent($, value)}
+                />
+              )}
+              <Button key="big-start" variant="primary" label="Начать с намерения" onPress={() => void startIntent($, bigText)} />
+            </Box>
+          </Box>
+        ) : (
+          <Box flexDirection="column">
+            {STAGES.map((stage, index) => {
+              const isDone = index < bigAt
+              const isNow = index === bigAt
+              return (
+                <Box key={`stage-${stage.id}`}>
+                  <Box width={NUMERAL_WIDTH} flexShrink={0}>
+                    <Text dimColor>{index + 1}.</Text>
+                  </Box>
+                  <Box flexGrow={1}>
+                    <Text {...(isNow ? { color: 'claude' } : { dimColor: true })}>{stage.title}</Text>
+                  </Box>
+                  <Box width={2} flexShrink={0} justifyContent="flex-end">
+                    <Text {...(isDone ? { color: 'success' } : isNow ? { color: 'claude' } : { dimColor: true })}>
+                      {isDone ? '✓' : isNow ? '←' : ' '}
+                    </Text>
+                  </Box>
+                </Box>
+              )
+            })}
+            {bigStage === 'intent' && (
+              <Box marginTop={1}>
+                <Text dimColor wrap="wrap">
+                  Идёт интервью: отвечай Claude в чате, он запишет INTENT.md.
+                </Text>
+              </Box>
+            )}
+            <Box marginTop={1} gap={1} flexWrap="wrap">
+              {bigStage === 'spec' && <Button key="big-spec" variant="primary" label="Составить спецификацию" onPress={() => void nextStage($, 'spec')} />}
+              {bigStage === 'plan' && <Button key="big-plan" variant="primary" label="Составить план" onPress={() => void nextStage($, 'plan')} />}
+              {bigStage === 'work' && (
+                <Button key="big-copy" variant="primary" label="Скопировать для нового чата" onPress={press => void copyWork($, press.surface)} />
+              )}
+              {bigStage === 'work' && <Button key="big-here" label="Работать здесь" onPress={() => void nextStage($, 'work')} />}
+              <Button key="big-close" label="Закрыть задачу" onPress={() => void closeChain($)} />
+            </Box>
+          </Box>
+        )}
+      </Box>
+    )
     const nowMs = await $.clock.now()
     const recentlyClosed = [...later.closed].reverse().slice(0, CLOSED_SHOWN)
     const at = await read($, now)
@@ -656,6 +809,7 @@ export const register: Register = on => {
               Напиши, что сделать, или поставь цель через /goal.
             </Text>
           </Box>
+          {bigBlock}
           {backlogBlock}
         </Box>
       )
@@ -758,6 +912,7 @@ export const register: Register = on => {
             {mode}
           </Text>
         </Box>
+        {bigBlock}
         {backlogBlock}
       </Box>
     )

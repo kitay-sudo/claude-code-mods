@@ -462,3 +462,71 @@ test('the intent sits above the plan, and the task is done only once its checks 
   const refused = await $.tool.call({ tool: 'mcp__task-panel__plan', intent: { goal: 'x', criteria: [] }, steps: [{ title: 'a', status: 'pending' }] })
   expect(refused.deny).toContain('intent.criteria')
 })
+
+test('a big task goes through its files: /intent starts it, the panel shows the stage and the next button', async ($, on) => {
+  world(on)
+  mock.store(on, {})
+  const copied: string[] = []
+  const toasts: string[] = []
+  // The project folder as the test lays it: intent/<task>/ and its files.
+  const disk = { dirs: [] as string[], files: {} as Record<string, string[]> }
+  on('session.cwd', () => ({ value: 'C:\\work\\shop' }))
+  on('prompt.context', ($, e) => ({ blocks: e.blocks }))
+  on('ui.toast', ($, e) => {
+    toasts.push(e.text)
+    return { value: undefined }
+  })
+  on('ui.copy', ($, e) => {
+    copied.push(e.text)
+    return { value: { isCopied: true as const } }
+  })
+  // The engine may hand the path relative or resolved against the project: read the part from intent/ on.
+  const within = (path: string) => path.replace(/\\/g, '/').replace(/^.*?(?:^|\/)intent(?=\/|$)/, 'intent')
+  on('fs.exists', ($, e) => ({ value: within(e.path) === 'intent' && disk.dirs.length > 0 }))
+  on('fs.list', ($, e) => {
+    const entry = (name: string, kind: 'dir' | 'file') => ({ name, kind, size: 0, mtimeMs: 0, isLink: false })
+    const at = within(e.path)
+    if (at === 'intent') return { value: disk.dirs.map(name => entry(name, 'dir')) }
+    return { value: (disk.files[at.replace(/^intent\//, '')] ?? []).map(name => entry(name, 'file')) }
+  })
+  const turn = async (turnId: string) => {
+    await $.turn.start({ text: 'x', turnId })
+    await $.turn.complete({ answer: 'ok', durationMs: 1, isAborted: false, turnId, reason: 'answer' })
+  }
+  await $.session.start({ cwd: 'C:\\work\\shop', surface: 'desktop', isInteractive: true })
+  const ui = await mountPane($, 'desktop')
+  const texts = async () => (await ui.findAll({ type: 'Text' })).map(found => found.text)
+
+  // Always in view: the button that starts a big task.
+  expect(await texts()).toContain('БОЛЬШАЯ ЗАДАЧА')
+  expect((await ui.find({ type: 'Button', key: 'big-start' }))?.text).toBe('Начать с намерения')
+
+  // /intent starts the interview as a task of its own.
+  await $.command.run({ command: 'intent', args: 'отчёты по продажам', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 120 } })
+  expect(await texts()).toContain('«Намерение: отчёты по продажам»')
+
+  // The interview wrote INTENT.md: stage 2, and its button.
+  disk.dirs = ['2026-10-12-otchety']
+  disk.files['2026-10-12-otchety'] = ['INTENT.md']
+  await turn('t1')
+  let shown = await texts()
+  for (const one of ['БОЛЬШАЯ ЗАДАЧА · 2026-10-12-otchety', 'Намерение', 'Спецификация', 'План', 'Работа']) expect(shown).toContain(one)
+  expect((await ui.find({ type: 'Button', key: 'big-spec' }))?.props.variant).toBe('primary')
+  expect(await ui.find({ type: 'Button', key: 'big-start' })).toBeUndefined()
+
+  // Spec and plan written: the work's request goes to a new chat through the clipboard.
+  disk.files['2026-10-12-otchety'] = ['INTENT.md', 'SPEC.md', 'PLAN.md']
+  await turn('t2')
+  await ui.press({ key: 'big-copy' })
+  expect(copied[0]).toContain('Реализуй план из intent/2026-10-12-otchety/PLAN.md')
+  expect(toasts).toContain('Скопировано. Открой новый чат и вставь (Ctrl+V).')
+  // The model knows the open big task.
+  const context = (await $.prompt.context({ blocks: [] })).blocks.find(block => block.name === 'taskPanel')?.text ?? ''
+  expect(context).toContain('intent/2026-10-12-otchety/ (INTENT.md, SPEC.md, PLAN.md)')
+
+  // Closed: its files stay, the panel offers a new one.
+  await ui.press({ key: 'big-close' })
+  shown = await texts()
+  expect(shown).toContain('БОЛЬШАЯ ЗАДАЧА')
+  expect(await ui.find({ type: 'Button', key: 'big-start' })).toBeDefined()
+})

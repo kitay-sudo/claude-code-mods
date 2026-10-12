@@ -59,6 +59,17 @@ export type Backlog = {
   next: number
 }
 
+/** A big task's folder under intent/, and which of its files are there. */
+export type Chain = {
+  name: string
+  dir: string
+  hasIntent: boolean
+  hasSpec: boolean
+  hasPlan: boolean
+}
+
+export type ChainStage = 'intent' | 'spec' | 'plan' | 'work'
+
 declare module 'claude-code' {
   interface PluginState {
     'task-panel': {
@@ -80,6 +91,10 @@ declare module 'claude-code' {
       backlogDraft: string
       /** Whether "очистить всё" waits for its second press. */
       backlogClearing: boolean
+      /** The open big task of the project, read from intent/; null when there is none. */
+      chain: Chain | null
+      /** What the person is typing into the big-task field. */
+      bigDraft: string
     }
   }
 }

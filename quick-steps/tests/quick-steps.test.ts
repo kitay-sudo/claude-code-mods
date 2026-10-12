@@ -63,6 +63,25 @@ test('a press sends the suggestion at once', async ($, on) => {
   }
 })
 
+test('the first suggestion is the recommended one, and the model is told to mark its own', async ($, on) => {
+  const { clock, sent, forks } = world(on)
+  on('prompt.context', ($, e) => ({ blocks: e.blocks }))
+  await $.turn.complete({ answer: LONG_ANSWER, durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' })
+  await clock.settle()
+  expect(forks[0]).toContain('Order them best first: the first one is the step you recommend.')
+
+  const ui = await $.ui.mount({ plugin: 'quick-steps', surface: 'desktop', component: 'AbovePrompt', props: BAND })
+  const marks = await ui.findAll({ type: 'Text', text: '(Рекомендую)' })
+  expect(marks).toHaveLength(1)
+  expect(marks[0]?.props.color).toBe('success')
+  // The mark is shown beside the first, not sent with it.
+  await ui.press({ key: 's0' })
+  expect(sent.map(one => one.text)).toEqual(['Прогони тесты модуля auth'])
+
+  const rule = (await $.prompt.context({ blocks: [] })).blocks.find(block => block.name === 'nextSteps')?.text ?? ''
+  expect(rule).toContain('"(Рекомендую)"')
+})
+
 test('0 hides the suggestions without sending anything', async ($, on) => {
   const { clock, sent } = world(on)
   await $.turn.complete({ answer: LONG_ANSWER, durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' })
