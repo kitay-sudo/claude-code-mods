@@ -246,7 +246,7 @@ test('a long run without a plan counts its actions and reminds the model to plan
   on('classic.PostToolUse', () => ({}))
   await $.session.start({ cwd: '/w', surface: 'desktop', isInteractive: true })
   const context = await $.prompt.context({ blocks: [] })
-  expect(context.blocks.find(block => block.name === 'taskPanel')?.text).toContain('call mcp__task-panel__plan before you start')
+  expect(context.blocks.find(block => block.name === 'taskPanel')?.text).toContain('call mcp__task-panel__plan with the intent and every step')
 
   await $.prompt.submit({ text: 'Подключи провайдера claude к серверу', wait: false, origin: { kind: 'composer' } })
   await $.turn.start({ text: 'Подключи провайдера claude к серверу', turnId: 't1' })
@@ -404,4 +404,61 @@ test('the panel starts with the task: the app shows its own tabs above it', asyn
   // Opened by another plugin, the panel leaves no line in the chat.
   const quiet = await $.command.run({ command: 'task-panel', args: '', origin: { kind: 'plugin', name: 'project-passport' }, presentation: { isFullscreen: false, columns: 120 } })
   expect(quiet.text).toBeUndefined()
+})
+
+test('the intent sits above the plan, and the task is done only once its checks hold', async ($, on) => {
+  world(on)
+  on('prompt.context', ($, e) => ({ blocks: e.blocks }))
+  await $.session.start({ cwd: '/w', surface: 'desktop', isInteractive: true })
+  await $.prompt.submit({ text: 'Сделай форму заявки с отправкой на почту', wait: false, origin: { kind: 'composer' } })
+  await $.turn.start({ text: 'Сделай форму заявки с отправкой на почту', turnId: 't1' })
+  const intent = {
+    goal: 'Клиенты оставляют заявку, и она приходит на почту менеджеру',
+    criteria: [{ text: 'Форма отправляется без ошибок' }, { text: 'Письмо приходит на info@' }],
+  }
+  const planned = await $.tool.call({
+    tool: 'mcp__task-panel__plan',
+    intent,
+    steps: [
+      { title: 'Форма', status: 'in_progress' },
+      { title: 'Отправка писем', status: 'pending' },
+    ],
+  })
+  expect(planned.result).toBe('План на пульте: готово 0 из 2. Критерии: выполнено 0 из 2.')
+
+  const ui = await mountPane($, 'desktop')
+  let shown = (await ui.findAll({ type: 'Text' })).map(found => found.text)
+  for (const one of ['ЧТО ХОТИМ', intent.goal, 'ГОТОВО, КОГДА', 'Форма отправляется без ошибок', 'Письмо приходит на info@']) expect(shown).toContain(one)
+  // Above the plan.
+  expect(shown.indexOf('ГОТОВО, КОГДА')).toBeLessThan(shown.indexOf('ГОТОВНОСТЬ'))
+
+  // Steps done, checks not yet: not done, and the model is told to check.
+  const stepsDone = await $.tool.call({
+    tool: 'mcp__task-panel__plan',
+    steps: [
+      { title: 'Форма', status: 'completed' },
+      { title: 'Отправка писем', status: 'completed' },
+    ],
+  })
+  expect(stepsDone.result).toContain('Шаги готовы, но не все критерии отмечены')
+  expect(await ui.find({ type: 'Text', text: 'ШАГИ ГОТОВЫ · СВЕРЯЮ С ЦЕЛЬЮ' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: '50 %' })).toBeDefined()
+
+  // Every check holds: done, 🪴.
+  await $.tool.call({
+    tool: 'mcp__task-panel__plan',
+    intent: { ...intent, criteria: intent.criteria.map(one => ({ ...one, met: true })) },
+    steps: [
+      { title: 'Форма', status: 'completed' },
+      { title: 'Отправка писем', status: 'completed' },
+    ],
+  })
+  shown = (await ui.findAll({ type: 'Text' })).map(found => found.text)
+  expect(shown.some(text => text.startsWith('🪴 ВСЁ ГОТОВО'))).toBe(true)
+  expect(shown).toContain('100 %')
+  expect((await ui.findAll({ type: 'Text', text: '✓' })).length).toBe(4)
+
+  // A malformed intent is refused with the reason.
+  const refused = await $.tool.call({ tool: 'mcp__task-panel__plan', intent: { goal: 'x', criteria: [] }, steps: [{ title: 'a', status: 'pending' }] })
+  expect(refused.deny).toContain('intent.criteria')
 })

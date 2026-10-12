@@ -80,7 +80,10 @@ function forkPrompt(skills: string): string {
     'to this conversation: name the file, test, PR, or follow-up they would actually type), each at most ' +
     `${PROMPT_MAX} characters. Pressing one sends it at once, so each must be complete as written. Prefer the ` +
     'obvious next action (run the tests, commit, fix the thing you flagged, do the same for X) over generic ' +
-    'ones. If the conversation is clearly finished or nothing useful comes to mind, return an empty list.\n\n' +
+    'ones. If the conversation is clearly finished or nothing useful comes to mind, return an empty list. ' +
+    "When the user's last request is a large or vague piece of work and no goal with \"done when\" criteria has " +
+    'been agreed yet, make the first suggestion a request to agree on them before any work starts (in Russian: ' +
+    '"Сначала уточним цель и критерии готовности").\n\n' +
     (skills === ''
       ? ''
       : 'The user runs a skill or slash command by starting a prompt with its name. When one of them is ' +

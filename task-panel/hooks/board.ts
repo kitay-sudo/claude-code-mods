@@ -1,6 +1,6 @@
 // The task's plan and clock as plain data: no `$`, so tests read it directly.
 
-import type { Backlog, BacklogItem, ClosedItem, Queued, Step, StepStatus, Task } from '../types'
+import type { Backlog, BacklogItem, ClosedItem, Intent, Queued, Step, StepStatus, Task } from '../types'
 
 const TITLE_MAX = 160
 const ITEM_MAX = 300
@@ -154,8 +154,33 @@ export function withUpdate(
 }
 
 /** The task with its new steps: done once every step is, open again if one is not. */
+/** True when there is no intent, or every one of its checks holds. */
+export function intentMet(intent: Intent | null): boolean {
+  return intent === null || intent.criteria.every(criterion => criterion.met)
+}
+
+const CRITERIA_MAX = 6
+
+/** The intent the model passed: absent is null (keep the one there), a malformed one says why. */
+export function fromIntent(raw: unknown): Intent | null | { error: string } {
+  if (raw === undefined || raw === null) return null
+  const one = raw as { goal?: unknown; criteria?: unknown }
+  if (typeof one.goal !== 'string' || one.goal.trim() === '') return { error: 'intent.goal: одной строкой, зачем эта задача' }
+  if (!Array.isArray(one.criteria) || one.criteria.length === 0 || one.criteria.length > CRITERIA_MAX) {
+    return { error: `intent.criteria: от 1 до ${CRITERIA_MAX} проверяемых пунктов "готово, когда"` }
+  }
+  const criteria: Intent['criteria'] = []
+  for (const item of one.criteria) {
+    const text = (item as { text?: unknown }).text
+    if (typeof text !== 'string' || text.trim() === '') return { error: 'intent.criteria[].text: что проверить' }
+    criteria.push({ text: titleOf(text), met: (item as { met?: unknown }).met === true })
+  }
+  return { goal: titleOf(one.goal), criteria }
+}
+
+/** The task with its new steps: done once every step is and every check of its intent holds, open again if not. */
 export function settle(task: Task, steps: Step[], at: number): Task {
-  const isDone = steps.length > 0 && steps.every(step => step.status === 'completed')
+  const isDone = steps.length > 0 && steps.every(step => step.status === 'completed') && intentMet(task.intent)
   return { ...task, steps, finishedAt: isDone ? (task.finishedAt ?? at) : steps.length > 0 ? null : task.finishedAt }
 }
 
@@ -180,7 +205,12 @@ export function progress(steps: readonly Step[]): { done: number; total: number;
 
 /** How ready the task is: its plan's share of done steps, or 0 and 100 without one. */
 export function readiness(task: Task): number {
-  if (task.steps.length > 0) return progress(task.steps).percent
+  if (task.steps.length > 0) {
+    // The checks of the intent count with the steps: the last stretch is proving it works.
+    const criteria = task.intent?.criteria ?? []
+    const done = progress(task.steps).done + criteria.filter(criterion => criterion.met).length
+    return Math.round((done / (task.steps.length + criteria.length)) * 100)
+  }
   return task.finishedAt === null ? 0 : 100
 }
 

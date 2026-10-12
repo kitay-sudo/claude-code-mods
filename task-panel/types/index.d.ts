@@ -8,6 +8,12 @@ export type Step = {
 }
 
 /** The task the panel follows: a /goal, or what the person asked for. */
+/** What a task is for, agreed before its plan: the goal and the checks that say it is done. */
+export type Intent = {
+  goal: string
+  criteria: { text: string; met: boolean }[]
+}
+
 export type Task = {
   title: string
   isGoal: boolean
@@ -16,6 +22,8 @@ export type Task = {
   /** When it ended: every step done, or a turn without a plan answered; null while it runs. */
   finishedAt: number | null
   steps: Step[]
+  /** The goal and its "done when" checks, once the model stated them; null before. */
+  intent: Intent | null
 }
 
 /** A prompt typed while Claude was working, waiting to be read. */

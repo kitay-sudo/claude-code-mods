@@ -20,7 +20,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, PromptOrigin, Register, RenderElement } from 'claude-code'
 
-import type { Backlog, Queued, Step, Task } from '../types'
+import type { Backlog, Intent, Queued, Step, Task } from '../types'
 import {
   addItems,
   ageText,
@@ -31,7 +31,9 @@ import {
   currentStep,
   emptyBacklog,
   formatElapsed,
+  fromIntent,
   fromPlan,
+  intentMet,
   fromTaskList,
   fromTodos,
   progress,
@@ -67,7 +69,9 @@ const NUDGE_AFTER = 4
 
 const BRIEFING =
   'The user follows your work in the Task panel beside the chat. For a request that takes three or more steps, ' +
-  `call ${PLAN_TOOL} before you start, with every step, then again each time a step starts or finishes. ` +
+  'first agree on its intent: the goal in one line and 2 to 4 checkable "done when" criteria; when the request is ' +
+  'vague, ask the user before you plan. ' +
+  `Then call ${PLAN_TOOL} with the intent and every step, then again each time a step starts or finishes. ` +
   'Without a plan the panel shows the user no progress. Prompts the user types while you work wait there as a ' +
   'queue until you read them.'
 
@@ -87,10 +91,13 @@ function isPerson(origin: PromptOrigin): boolean {
 }
 
 const PLAN_DESCRIPTION =
-  'Shows the user the plan of the current task in the Task panel beside the chat: its steps, which are done, ' +
-  'and how far along it is. For a task of three or more steps, call it when you start with every step, then ' +
-  'again each time a step starts or finishes, passing the whole list every time. Exactly one step is ' +
-  'in_progress while you work on it. Write step titles short, in the language the user writes in.'
+  'Shows the user the plan of the current task in the Task panel beside the chat: what it is for, its steps, ' +
+  'which are done, and how far along it is. For a task of three or more steps, first state its intent: the goal ' +
+  'in one line and 2 to 4 checkable "done when" criteria (when the request is vague, ask the user first), and pass ' +
+  'it as intent with your first call, together with every step. Call it again each time a step starts or ' +
+  'finishes, passing the whole list every time; exactly one step is in_progress while you work on it. When the ' +
+  'steps are done, check each criterion for real (run it, open it, test it) and pass intent again with met: true ' +
+  'on the ones that hold: the task shows as done only then. Write everything short, in the language the user writes in.'
 
 const PLAN_SCHEMA = {
   type: 'object',
@@ -106,6 +113,26 @@ const PLAN_SCHEMA = {
         },
         required: ['title', 'status'],
       },
+    },
+    intent: {
+      type: 'object',
+      description: 'What the task is for. Pass it with the first call, and again to mark criteria met; leave it out to keep it.',
+      properties: {
+        goal: { type: 'string', description: 'The goal in one line: what we want and why.' },
+        criteria: {
+          type: 'array',
+          description: '2 to 4 checkable "done when" criteria.',
+          items: {
+            type: 'object',
+            properties: {
+              text: { type: 'string', description: 'What to check, in a few words.' },
+              met: { type: 'boolean', description: 'True once you checked it holds.' },
+            },
+            required: ['text'],
+          },
+        },
+      },
+      required: ['goal', 'criteria'],
     },
   },
   required: ['steps'],
@@ -149,19 +176,20 @@ async function openPane($: EngineInterface): Promise<void> {
 async function startTask($: EngineInterface, title: string, isGoal: boolean): Promise<void> {
   const at = await $.clock.now()
   await update($, now, () => at)
-  await update($, task, () => ({ title, isGoal, startedAt: at, finishedAt: null, steps: [] }))
+  await update($, task, () => ({ title, isGoal, startedAt: at, finishedAt: null, steps: [], intent: null }))
   await update($, actions, () => 0)
   await update($, nudged, () => false)
   await openPane($)
 }
 
-async function changeSteps($: EngineInterface, change: (steps: readonly Step[]) => Step[]): Promise<void> {
+/** New steps, and the intent when one is passed (absent keeps the one there). */
+async function changeSteps($: EngineInterface, change: (steps: readonly Step[]) => Step[], intent?: Intent): Promise<void> {
   const at = await $.clock.now()
   const before = await read($, task)
   await update($, now, () => at)
   await update($, task, current => {
-    const base: Task = current ?? { title: 'Текущая задача', isGoal: false, startedAt: at, finishedAt: null, steps: [] }
-    return settle(base, change(base.steps), at)
+    const base: Task = current ?? { title: 'Текущая задача', isGoal: false, startedAt: at, finishedAt: null, steps: [], intent: null }
+    return settle({ ...base, intent: intent ?? base.intent ?? null }, change(base.steps), at)
   })
   if (before === null) await openPane($)
 }
@@ -426,9 +454,17 @@ export const register: Register = on => {
   on('tool.call', { tool: PLAN_TOOL }, async ($, e) => {
     const plan = fromPlan((e as { steps?: unknown }).steps)
     if (plan === null) return { deny: 'steps: нужен список шагов { title, status }, status — pending, in_progress или completed.' }
-    await changeSteps($, () => plan)
+    const intent = fromIntent((e as { intent?: unknown }).intent)
+    if (intent !== null && 'error' in intent) return { deny: intent.error }
+    await changeSteps($, () => plan, intent ?? undefined)
     const { done, total } = progress(plan)
-    return { result: `План на пульте: готово ${done} из ${total}.` }
+    const held = (await read($, task))?.intent ?? null
+    const checks = held === null ? '' : ` Критерии: выполнено ${held.criteria.filter(one => one.met).length} из ${held.criteria.length}.`
+    const left =
+      held !== null && done === total && !intentMet(held)
+        ? ' Шаги готовы, но не все критерии отмечены: проверь их по-настоящему и передай intent с met: true на тех, что выполнены.'
+        : ''
+    return { result: `План на пульте: готово ${done} из ${total}.${checks}${left}` }
   })
 
   on('tool.call', { tool: 'TodoWrite' }, async ($, e, next) => {
@@ -638,9 +674,12 @@ export const register: Register = on => {
         : done === total
           ? `ВСЕ ЭТАПЫ ВЫПОЛНЕНЫ · ${roman(total)}`
           : `ЭТАП ${roman(currentStep(current.steps))} ИЗ ${roman(total)}`
+    const isChecking = total > 0 && done === total && !intentMet(current.intent) && current.finishedAt === null
     const mode = isDone
       ? `🪴 ВСЁ ГОТОВО ЗА ${elapsed.toUpperCase()}`
-      : current.finishedAt !== null
+      : isChecking
+        ? 'ШАГИ ГОТОВЫ · СВЕРЯЮ С ЦЕЛЬЮ'
+        : current.finishedAt !== null
         ? 'ОСТАНОВЛЕНО'
         : working
           ? 'РЕЖИМ: РАБОТАЮ'
@@ -653,6 +692,30 @@ export const register: Register = on => {
         <Text wrap="wrap">
           «{current.title}»
         </Text>
+        {current.intent !== null && (
+          <Box marginTop={1} flexDirection="column">
+            <Text dimColor>ЧТО ХОТИМ</Text>
+            <Text wrap="wrap">{current.intent.goal}</Text>
+            <Box marginTop={1}>
+              <Text dimColor>ГОТОВО, КОГДА</Text>
+            </Box>
+            {current.intent.criteria.map((criterion, index) => (
+              <Box key={`crit-${index}`}>
+                <Box width={NUMERAL_WIDTH} flexShrink={0}>
+                  <Text dimColor>{index + 1}.</Text>
+                </Box>
+                <Box flexGrow={1}>
+                  <Text wrap="wrap" {...(criterion.met ? { dimColor: true } : {})}>
+                    {criterion.text}
+                  </Text>
+                </Box>
+                <Box width={2} flexShrink={0} justifyContent="flex-end">
+                  <Text {...(criterion.met ? { color: 'success' } : { dimColor: true })}>{criterion.met ? '✓' : ' '}</Text>
+                </Box>
+              </Box>
+            ))}
+          </Box>
+        )}
         <Box marginTop={1} flexDirection="column">
           <Box justifyContent="space-between">
             <Text dimColor>ГОТОВНОСТЬ</Text>
