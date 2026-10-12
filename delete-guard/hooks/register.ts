@@ -230,7 +230,13 @@ async function forget($: EngineInterface): Promise<void> {
   await update($, approved, () => null)
 }
 
+// Hot-reload notices of the mods ("plugin.json changed — reloaded (modules: ...)") go to the
+// debug log, not the chat; failures and every other line stay where they were.
+export const RELOAD_NOTICE = /changed\s*[—-]\s*reloaded\b|\breloaded\s*\(modules:/i
+
 export const register: Register = on => {
+  on('ui.log', async ($, e, next) => (RELOAD_NOTICE.test(e.text) ? next({ ...e, to: 'debug' }) : next(e)))
+
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
     const deny = await guard($, e.tool, e.command, 'bash')
     return deny === undefined ? next(e) : { deny }
