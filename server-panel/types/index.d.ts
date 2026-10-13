@@ -38,13 +38,16 @@ export type Run = {
   tail: string
 }
 
-/** One service of the project on the server: a container or a pm2 process. */
+/** One service on the server: a container, a pm2 process, a systemd unit, nginx. */
 export type Service = {
+  kind: 'container' | 'pm2' | 'systemd' | 'nginx'
   name: string
   /** As its runtime says it: running, exited, restarting, online, stopped... */
   state: string
   /** pm2 restarts, when known. */
   restarts: number | null
+  /** pm2's app version, when known. */
+  version: string | null
 }
 
 /** What runs the project on the server, as the health check found it. */
@@ -58,8 +61,14 @@ export type Vitals = {
   memTotalMb: number | null
   diskPercent: number | null
   diskFreeMb: number | null
+  /** What mainly runs the project; `docker` only in checks from before 0.8. */
   runtime: Runtime
+  /** The project's own: what runs from its folder, and nginx. */
   services: Service[]
+  /** The rest of the machine: other projects' containers and pm2 processes. */
+  others: Service[]
+  /** Docker is on the server. */
+  hasDocker: boolean
   /** The last error lines of the project's logs, newest last. */
   errors: string[]
   /** The project's own log files the errors were read from, newest first. */
@@ -109,6 +118,8 @@ declare module 'claude-code' {
       confirming: string | null
       /** Whether the new-server form is open while servers already exist. */
       adding: boolean
+      /** The servers whose other processes (other projects') are unfolded. */
+      othersOpen: string[]
     }
   }
 }

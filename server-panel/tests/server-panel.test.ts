@@ -288,7 +288,7 @@ test('nothing sticks together: a blank row under headings and labels, settings o
 test('the card shows the server\'s health, the band its worst problem, and the errors go to Claude in one press', async ($, on) => {
   const { clock, ran, sim, submitted, toasts } = world(on, { [STORE_KEY]: { servers: [PROD], settings: { confirm: 'every', band: true } } })
   sim.vitals =
-    'load=0.5\ncpus=2\nmem=1229/3891\ndisk=41/12000\nkind=compose\nsvc=web|running|\nsvc=worker|running|\n' +
+    'load=0.5\ncpus=2\nmem=1229/3891\ndisk=41/12000\ndocker=1\nctr=web|running|1\nctr=worker|running|1\n' +
     'logfile=storage/logs/laravel.log\nerr=ERROR connection refused to db:5432\n'
   await $.session.start({ cwd: 'C:\\proj', surface: 'desktop', isInteractive: true })
   await clock.settle()
@@ -298,16 +298,16 @@ test('the card shows the server\'s health, the band its worst problem, and the e
     'СОСТОЯНИЕ · Docker Compose',
     'процессор 25% · память 1,2 ГБ из 3,8 ГБ',
     'web',
-    'работает',
+    'контейнер · работает',
     'ОШИБКИ В ЛОГАХ · 1',
-    'откуда: Docker Compose, storage/logs/laravel.log',
+    'откуда: docker web, worker, storage/logs/laravel.log',
     'ERROR connection refused to db:5432',
   ]) {
     expect(shown).toContain(one)
   }
 
   // A service that stops between checks: a toast once, red in the card and in the band.
-  sim.vitals = sim.vitals.replace('svc=worker|running|', 'svc=worker|exited|')
+  sim.vitals = sim.vitals.replace('ctr=worker|running|1', 'ctr=worker|exited|1')
   await pane.press({ key: 'refresh-prod' })
   expect(toasts).toContain('prod: worker: остановлен')
   shown = (await pane.findAll({ type: 'Text' })).map(found => found.text)
@@ -317,8 +317,47 @@ test('the card shows the server\'s health, the band its worst problem, and the e
 
   // The logs land in the journal; the errors reach Claude as the person's request.
   await pane.press({ key: 'logs-prod' })
-  expect(commands(ran).some(command => String(command).startsWith("cd ~/'app' && docker compose logs --tail 60 --no-color 2>&1; for f in"))).toBe(true)
+  expect(commands(ran).some(command => String(command).startsWith("cd ~/'app' && docker logs --tail 60 'web' 2>&1; docker logs --tail 60 'worker' 2>&1; for f in"))).toBe(true)
   await pane.press({ key: 'analyze-prod' })
   expect(submitted[0]).toContain('Разбери ошибки на сервере prod')
   expect(submitted[0]).toContain('ERROR connection refused to db:5432')
+})
+
+test('the card lists the project\'s own processes; another project\'s containers fold into one line', async ($, on) => {
+  const { clock, ran, sim } = world(on, { [STORE_KEY]: { servers: [PROD], settings: { confirm: 'every', band: true } } })
+  // acme-travel on prod: the site under pm2, bank's containers beside it.
+  sim.vitals =
+    'load=0.2\ncpus=4\nmem=2048/7900\ndisk=84/6349\ndocker=1\nctr=bank-bot-1|running|0\nctr=bank-web-1|running|0\n' +
+    'ctr=bank-db-1|running|0\nctr=bank-redis-1|running|0\npm2=acme|online|3|1.4.0|1\nnginx=active\n'
+  await $.session.start({ cwd: 'C:\\proj', surface: 'desktop', isInteractive: true })
+  await clock.settle()
+  const pane = await $.ui.mount({ plugin: 'server-panel', surface: 'desktop', component: 'Pane', requestId: 'server-panel', props: PANE })
+  let shown = (await pane.findAll({ type: 'Text' })).map(found => found.text)
+  for (const one of [
+    'СОСТОЯНИЕ · pm2',
+    'диск сервера 84% · свободно 6,2 ГБ',
+    'acme',
+    'pm2 · работает · v1.4.0 · перезапусков 3',
+    'nginx',
+    'контейнеров в проекте нет',
+  ]) {
+    expect(shown).toContain(one)
+  }
+  expect(shown.filter(text => text.startsWith('bank'))).toEqual([])
+  expect(shown.filter(text => text.startsWith('⚠'))).toEqual([])
+
+  // One press shows them, apart; the next folds them again.
+  expect((await pane.find({ type: 'Button', key: 'others-prod' }))?.text).toBe('Ещё 4 контейнера на сервере')
+  await pane.press({ key: 'others-prod' })
+  shown = (await pane.findAll({ type: 'Text' })).map(found => found.text)
+  expect(shown).toContain('Не из этого проекта:')
+  expect(shown.filter(text => text.startsWith('bank'))).toEqual(['bank-bot-1', 'bank-web-1', 'bank-db-1', 'bank-redis-1'])
+  expect((await pane.find({ type: 'Button', key: 'others-prod' }))?.text).toBe('Скрыть')
+  await pane.press({ key: 'others-prod' })
+  shown = (await pane.findAll({ type: 'Text' })).map(found => found.text)
+  expect(shown.filter(text => text.startsWith('bank'))).toEqual([])
+
+  // "Логи" reads the project's pm2 process, not the machine's containers.
+  await pane.press({ key: 'logs-prod' })
+  expect(commands(ran).some(command => String(command).startsWith("cd ~/'app' && pm2 logs 'acme' --nostream --raw --lines 60 2>&1; for f in"))).toBe(true)
 })

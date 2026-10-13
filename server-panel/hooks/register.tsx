@@ -34,7 +34,21 @@ import {
   tailOf,
 } from './ssh'
 import { joinRow } from './status-row'
-import { alerts, isUp, logSources, logsCommand, machineLines, parseVitals, runtimeName, shownServices, stateWord, vitalsArgs } from './vitals'
+import {
+  alerts,
+  hasNoContainers,
+  isUp,
+  logSources,
+  logsCommand,
+  machineLines,
+  otherServices,
+  othersLine,
+  parseVitals,
+  runtimeTitle,
+  serviceLine,
+  shownServices,
+  vitalsArgs,
+} from './vitals'
 
 const PANE = 'server-panel'
 const PANE_TITLE = 'Сервер-пульт'
@@ -65,6 +79,7 @@ const setup = atom({ plugin: 'server-panel', key: 'setup' } as const, null)
 const draft = atom({ plugin: 'server-panel', key: 'draft' } as const, EMPTY_DRAFT)
 const confirming = atom({ plugin: 'server-panel', key: 'confirming' } as const, null)
 const adding = atom({ plugin: 'server-panel', key: 'adding' } as const, false)
+const othersOpen = atom({ plugin: 'server-panel', key: 'othersOpen' } as const, [] as string[])
 
 // The connect assistant's poll; a reload drops it, and «Подключить» starts it again.
 let setupTimer: Timer | undefined
@@ -303,13 +318,17 @@ async function personRefresh($: EngineInterface, name: string): Promise<void> {
   if (server !== undefined) await checkHealth($, server)
 }
 
+/** The other projects' processes on a server: shown on a press, folded on the next. */
+async function toggleOthers($: EngineInterface, name: string): Promise<void> {
+  await update($, othersOpen, open => (open.includes(name) ? open.filter(one => one !== name) : [...open, name]))
+}
+
 /** The project's recent logs, run as the person's command so they land in the journal and reach the model. */
 async function personLogs($: EngineInterface, name: string): Promise<void> {
   const server = (await read($, servers)).find(one => one.name === name)
   if (server === undefined) return
   const vitals = (await read($, health))[name]?.vitals
-  const units = vitals?.runtime === 'systemd' ? vitals.services.map(service => service.name) : []
-  const output = await execute($, server, logsCommand(vitals?.runtime ?? 'none', LOG_LINES_SHOWN, units), 'person', 60)
+  const output = await execute($, server, logsCommand(vitals, LOG_LINES_SHOWN), 'person', 60)
   await tell($, `Пользователь открыл логи ${server.name}.\n${output}`)
 }
 
@@ -318,7 +337,7 @@ async function analyzeErrors($: EngineInterface, name: string): Promise<void> {
   const vitals = (await read($, health))[name]?.vitals
   if (vitals === undefined) return
   const text =
-    `Разбери ошибки на сервере ${name}. Зайди на сервер сам, посмотри логи (${runtimeName(vitals.runtime)}) и скажи, ` +
+    `Разбери ошибки на сервере ${name}. Зайди на сервер сам, посмотри логи (${logSources(vitals)}) и скажи, ` +
     `что сломалось и как починить. Последние строки с ошибками:\n${vitals.errors.join('\n')}`
   try {
     await $.prompt.submit({ text, asUser: true })
@@ -739,6 +758,7 @@ export const register: Register = on => {
     const waiting = await read($, confirming)
     const assistant = await read($, setup)
     const form = await read($, draft)
+    const unfolded = await read($, othersOpen)
     const isAdding = (await read($, adding)) || list.length === 0
     const recent = history.slice(-SHOWN_RUNS).reverse()
     const latest = history.at(-1)
@@ -842,19 +862,50 @@ export const register: Register = on => {
 
               {state?.vitals !== undefined && (
                 <Box marginTop={2} flexDirection="column">
-                  {heading(`h-state-${server.name}`, `СОСТОЯНИЕ · ${runtimeName(state.vitals.runtime)}`)}
+                  {heading(`h-state-${server.name}`, `СОСТОЯНИЕ · ${runtimeTitle(state.vitals)}`)}
                   {machineLines(state.vitals).map(line => (
                     <Text key={`m-${line}`}>{line}</Text>
                   ))}
-                  {shownServices(state.vitals).length > 0 && (
+                  {/* The project's own processes; the rest of the machine folded under them. */}
+                  <Box marginTop={1} flexDirection="column">
+                    {shownServices(state.vitals).map(service => (
+                      <Box key={`svc-${server.name}-${service.name}`} gap={1}>
+                        <Text {...(isUp(service) ? { color: 'success' } : { color: 'error' })}>●</Text>
+                        <Text>{service.name}</Text>
+                        <Text dimColor>{serviceLine(service)}</Text>
+                      </Box>
+                    ))}
+                    {server.dir === undefined ? (
+                      <Text dimColor wrap="wrap">
+                        Папка проекта не указана, поэтому его процессы не отделить от остальных.
+                      </Text>
+                    ) : hasNoContainers(state.vitals) ? (
+                      <Text dimColor>контейнеров в проекте нет</Text>
+                    ) : (
+                      shownServices(state.vitals).length === 0 && <Text dimColor>процессов проекта не найдено</Text>
+                    )}
+                  </Box>
+                  {othersLine(state.vitals) !== '' && (
                     <Box marginTop={1} flexDirection="column">
-                      {shownServices(state.vitals).map(service => (
-                        <Box key={`svc-${server.name}-${service.name}`} gap={1}>
-                          <Text {...(isUp(service) ? { color: 'success' } : { color: 'error' })}>●</Text>
-                          <Text>{service.name}</Text>
-                          <Text dimColor>{stateWord(service)}</Text>
+                      <Box>
+                        <Button
+                          key={`others-${server.name}`}
+                          label={unfolded.includes(server.name) ? 'Скрыть' : `${othersLine(state.vitals).slice(0, 1).toUpperCase()}${othersLine(state.vitals).slice(1)}`}
+                          onPress={() => void toggleOthers($, server.name)}
+                        />
+                      </Box>
+                      {unfolded.includes(server.name) && (
+                        <Box marginTop={1} flexDirection="column">
+                          <Text dimColor>Не из этого проекта:</Text>
+                          {otherServices(state.vitals).map(service => (
+                            <Box key={`other-${server.name}-${service.kind}-${service.name}`} gap={1}>
+                              <Text dimColor>●</Text>
+                              <Text dimColor>{service.name}</Text>
+                              <Text dimColor>{serviceLine(service)}</Text>
+                            </Box>
+                          ))}
                         </Box>
-                      ))}
+                      )}
                     </Box>
                   )}
                   {alerts(state.vitals).length > 0 && (
