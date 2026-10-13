@@ -3,67 +3,55 @@
 // who the client is and the language to write to them in, what the project
 // is, its rules and nuances, where things live. Never a password or a key.
 //
-// The /passport pane shows and edits it, opens by itself when a session starts
-// in a project that has one, and fills it in one press by asking the model to
-// read the project. The model adds what it learns with `passport_update`; the
-// person confirms each change (or switches that off in the pane). After an
-// answer it also picks, by itself, what is worth keeping from the person's own
-// messages (see learnPrompt). Every chat of the project reads the same store
-// and looks at it again every few seconds, so a change shows in all of them.
+// The /passport pane shows and edits it and opens by itself when a session
+// starts. Its buttons hand Claude a request: fill it from the project and sort
+// it against CLAUDE.md (each needed once, gone when Claude has done it), and
+// update it from the project and its code (any time). The model adds what it
+// learns with `passport_update`; the person confirms each change (or switches
+// that off in the pane). Every chat of the project reads the same store and
+// looks at it again every few seconds, so a change shows in all of them.
 
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderElement } from 'claude-code'
 
-import type { Note, NoteDraft, Passport, PassportSettings, Section } from '../types'
-import {
-  LANGUAGES,
-  SECTIONS,
-  addNote,
-  applyLearned,
-  briefing,
-  checkText,
-  describeChanges,
-  emptyPassport,
-  isNothing,
-  isSection,
-  learnPrompt,
-  parseLearned,
-  removeNote,
-  restore,
-  worthLearning,
-} from './notes'
-import type { Learned } from './notes'
+import type { Ask, Note, NoteDraft, Passport, PassportSettings, Section } from '../types'
+import { LANGUAGES, SECTIONS, addNote, briefing, checkText, describeChanges, emptyPassport, isSection, removeNote, restore, whenText } from './notes'
 
 const PANE = 'project-passport'
 const PANE_TITLE = 'Паспорт проекта'
 const TOOL = 'mcp__project-passport__passport_update'
 const SETTINGS_KEY = 'settings'
-const DEFAULT_SETTINGS: PassportSettings = { autoOpen: true, askBeforeAdd: true, autoLearn: true }
+const DEFAULT_SETTINGS: PassportSettings = { autoOpen: true, askBeforeAdd: true }
 const EMPTY_DRAFT: NoteDraft = { section: 'rules', text: '', error: '' }
 // The notes' numbers stand in a column of this width.
 const NUMBER_WIDTH = 4
 const LANGUAGE_LABELS = { ru: 'RU', en: 'EN', 'ru+en': 'RU+EN' } as const
 // How often a chat looks whether another chat of the project changed the passport.
 const SYNC_MS = 4_000
-// A note picked from the chat is marked new this long.
-const NEW_MS = 24 * 60 * 60 * 1000
-// Prompts the person wrote: at the prompt, through Remote Control, or in the app.
-const PERSON = new Set(['composer', 'bridge', 'sdk'])
-const HEARD_KEPT = 20
 
-const FILL_PROMPT =
-  'Заполни паспорт этого проекта. Прочитай README, CLAUDE.md, файлы пакета, скрипты деплоя и git remote, но в паспорт ' +
-  'через passport_update запиши только то, чего в этих файлах нет и что нужно знать про клиента: кто клиент, как и на ' +
-  'каком языке с ним общаться, договорённости, где что лежит (админки, серверы, документы, без паролей). Про проект ' +
-  'одной строкой. Стек, команды и правила по коду не переписывай, они уже в файлах. Чего не найдёшь, спроси у меня.'
-
-const SORT_PROMPT =
-  'Разбери паспорт проекта и CLAUDE.md. Всё про клиента (кто он, язык и тон общения, деньги, договорённости, личные ' +
-  'тонкости) должно быть в паспорте и не должно лежать в CLAUDE.md, README и других файлах репозитория: клиент может ' +
-  'видеть репозиторий. Всё про код и работу с репозиторием (сборка, тесты, устройство, что не трогать в коде) должно ' +
-  'быть в CLAUDE.md, а не в паспорте. Дубли того, что уже есть в README, из паспорта убери. Сначала покажи мне списком, ' +
-  'что куда переносишь и что убираешь, и подожди моего "да". Потом перенеси: паспорт через passport_update, CLAUDE.md ' +
-  'правь сам. Если CLAUDE.md нет, а перенести в него есть что, создай его.'
+const PROMPTS: Record<Ask, string> = {
+  fill:
+    'Заполни паспорт этого проекта. Прочитай README, CLAUDE.md, файлы пакета, скрипты деплоя и git remote, но в паспорт ' +
+    'через passport_update запиши только то, чего в этих файлах нет и что нужно знать про клиента: кто клиент, как и на ' +
+    'каком языке с ним общаться, договорённости, где что лежит (админки, серверы, документы, без паролей). Про проект ' +
+    'одной строкой. Стек, команды и правила по коду не переписывай, они уже в файлах. Чего не найдёшь, спроси у меня.',
+  sort:
+    'Разбери паспорт проекта и CLAUDE.md. Всё про клиента (кто он, язык и тон общения, деньги, договорённости, личные ' +
+    'тонкости) должно быть в паспорте и не должно лежать в CLAUDE.md, README и других файлах репозитория: клиент может ' +
+    'видеть репозиторий. Всё про код и работу с репозиторием (сборка, тесты, устройство, что не трогать в коде) должно ' +
+    'быть в CLAUDE.md, а не в паспорте. Дубли того, что уже есть в README, из паспорта убери. Сначала покажи мне списком, ' +
+    'что куда переносишь и что убираешь, и подожди моего "да". Потом перенеси: паспорт через passport_update, CLAUDE.md ' +
+    'правь сам. Если CLAUDE.md нет, а перенести в него есть что, создай его.',
+  update:
+    'Обнови паспорт этого проекта. Пройди по проекту и коду: README, CLAUDE.md, файлы пакета, конфиги, скрипты деплоя, ' +
+    '.env.example (только имена переменных, без значений), git remote и последние коммиты. Найди то, что важно знать для ' +
+    'работы с клиентом и чего ещё нет в паспорте: кто клиент, домены и сайты, админки, серверы, сторонние сервисы и ' +
+    'интеграции, документы, контакты, договорённости. Сверь с тем, что уже записано, и поправь устаревшее. Стек и правила ' +
+    'по коду в паспорт не пиши, они живут в CLAUDE.md. Пароли, ключи и токены не записывай. Запиши всё одним вызовом ' +
+    'passport_update, потом коротко скажи, что добавил, поправил и убрал. Если нового нет, так и скажи.',
+}
+const ASKS: readonly Ask[] = ['fill', 'sort', 'update']
+const ASKED_WORDS: Record<Ask, string> = { fill: 'заполнить паспорт', sort: 'разобрать паспорт и CLAUDE.md', update: 'обновить паспорт' }
 
 const TOOL_DESCRIPTION =
   "Changes this project's passport: the durable facts and nuances the user wants you to know in every " +
@@ -99,12 +87,11 @@ const draft = atom({ plugin: 'project-passport', key: 'draft' } as const, EMPTY_
 const confirming = atom({ plugin: 'project-passport', key: 'confirming' } as const, null)
 const project = atom({ plugin: 'project-passport', key: 'project' } as const, '')
 const asked = atom({ plugin: 'project-passport', key: 'asked' } as const, null)
-const heard = atom({ plugin: 'project-passport', key: 'heard' } as const, [] as string[])
+const running = atom({ plugin: 'project-passport', key: 'running' } as const, null)
 // A second press within this time is the same request: it is not sent again.
 const REPEAT_MS = 15_000
 // How long "✓ Передал Claude" stays under the buttons.
 const SENT_SHOWN_MS = 60_000
-const ASKED_WORDS = { fill: 'заполнить паспорт', sort: 'разобрать паспорт и CLAUDE.md' } as const
 
 function folderOf(cwd: string): string {
   return cwd.replace(/\\/g, '/').replace(/\/+$/, '')
@@ -116,7 +103,7 @@ async function storeKey($: EngineInterface): Promise<string> {
 
 function settingsOf(raw: unknown): PassportSettings {
   const mode = (raw ?? {}) as Partial<PassportSettings>
-  return { autoOpen: mode.autoOpen !== false, askBeforeAdd: mode.askBeforeAdd !== false, autoLearn: mode.autoLearn !== false }
+  return { autoOpen: mode.autoOpen !== false, askBeforeAdd: mode.askBeforeAdd !== false }
 }
 
 async function load($: EngineInterface): Promise<void> {
@@ -219,18 +206,24 @@ async function clearSection($: EngineInterface, section: Section): Promise<void>
 }
 
 /** A request handed to Claude as the person's own. */
-async function askClaude($: EngineInterface, what: 'fill' | 'sort', text: string): Promise<void> {
+async function askClaude($: EngineInterface, what: Ask): Promise<void> {
   const at = await $.clock.now()
   const last = await read($, asked)
   if (last !== null && last.what === what && at - last.at < REPEAT_MS) return
   await update($, asked, () => ({ what, at }))
   $.ui.toast(`Передал Claude: ${ASKED_WORDS[what]}. Если он сейчас занят, начнёт после текущего шага.`)
   try {
-    await $.prompt.submit({ text, asUser: true })
+    await $.prompt.submit({ text: PROMPTS[what], asUser: true })
   } catch (error) {
     await update($, asked, () => null)
     $.ui.toast(`Не удалось попросить Claude: ${String(error)}`)
   }
+}
+
+/** Which button's request a turn works on, by the request's first sentence. */
+function askIn(text: string): Ask | null {
+  const said = text.trim()
+  return ASKS.find(what => said.startsWith(PROMPTS[what].slice(0, PROMPTS[what].indexOf('.') + 1))) ?? null
 }
 
 async function toggle($: EngineInterface, name: keyof PassportSettings): Promise<void> {
@@ -238,44 +231,13 @@ async function toggle($: EngineInterface, name: keyof PassportSettings): Promise
   await keepSettings($, { ...mode, [name]: !mode[name] })
 }
 
-// --- From the chat ---------------------------------------------------------
-
-// The passport tool ran this turn: the model and the person have just settled
-// it (a «Отмена» included), so the chat is not looked at again for it.
-let toolRan = false
-let learning = false
 let syncTimer: { cancel: () => void } | null = null
-
-async function hear($: EngineInterface, text: string): Promise<void> {
-  if (text.trim() === '') return
-  await update($, heard, list => [...list, text].slice(-HEARD_KEPT))
-}
-
-/** What the person wrote since the last look, read by a fork; what is worth keeping goes in at once. */
-async function learn($: EngineInterface): Promise<void> {
-  const said = await read($, heard)
-  if (said.length === 0 || !worthLearning(said)) return
-  await update($, heard, () => [])
-  const now = restore(await $.store.get(await storeKey($)))
-  const reply = await $.model.fork({ prompt: learnPrompt(now, said) })
-  if (!reply.isAnswered) return
-  const at = await $.clock.now()
-  let learned: Learned = { adds: [], replaces: [] }
-  const { before, next } = await change($, current => {
-    learned = parseLearned(reply.text, current)
-    return isNothing(learned) ? current : applyLearned(current, learned, at)
-  })
-  if (next === before) return
-  const parts = next.notes.filter(note => !before.notes.some(old => old.id === note.id)).map(note => note.text)
-  if (learned.replyLanguage !== undefined) parts.push(`клиенту пишем ${LANGUAGES[learned.replyLanguage]}`)
-  if (parts.length > 0) $.ui.toast(`Паспорт пополнен из чата: ${parts[0]}${parts.length > 1 ? `, и ещё ${parts.length - 1}` : ''}`)
-}
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await load($)
     await update($, confirming, () => null)
-    await update($, heard, () => [])
+    await update($, running, () => null)
     await $.command.register({ name: 'passport', description: 'Открыть паспорт проекта: клиент, язык общения, правила и тонкости' })
     await $.tool.register({ name: 'passport_update', description: TOOL_DESCRIPTION, inputSchema: TOOL_SCHEMA, isDeferred: false })
     // Another chat of the project wrote: this one shows it within seconds.
@@ -292,27 +254,23 @@ export const register: Register = on => {
     return e.origin.kind === 'plugin' ? {} : { text: 'Паспорт проекта открыт.' }
   })
 
-  on('prompt.submit', async ($, e, next) => {
+  // A button's request starts its turn (at once, or after the turn before it).
+  on('turn.start', async ($, e, next) => {
     const result = await next(e)
-    if (PERSON.has(e.origin.kind) && (await read($, settings)).autoLearn) await hear($, e.text)
+    const what = askIn(e.text)
+    if (what !== null) await update($, running, () => ({ what, turnId: e.turnId }))
     return result
   })
 
+  // Its turn answered: the request is done, and "Заполнить" or "Разобрать" is not offered again.
   on('turn.complete', async ($, e, next) => {
     const result = await next(e)
-    if (e.agentId !== undefined) return result
-    if (toolRan) {
-      toolRan = false
-      await update($, heard, () => [])
-      return result
-    }
-    if (e.reason === 'answer' && !learning && (await read($, settings)).autoLearn) {
-      learning = true
-      void learn($)
-        .catch(error => $.ui.log(`project-passport: ${String(error)}`, { to: 'debug' }))
-        .finally(() => {
-          learning = false
-        })
+    const now = await read($, running)
+    if (e.agentId !== undefined || now === null || now.turnId !== e.turnId) return result
+    await update($, running, () => null)
+    if (e.reason === 'answer') {
+      const at = await $.clock.now()
+      await change($, current => ({ ...current, ran: { ...current.ran, [now.what]: at } }))
     }
     return result
   })
@@ -324,7 +282,6 @@ export const register: Register = on => {
   })
 
   on('tool.call', { tool: TOOL }, async ($, e) => {
-    toolRan = true
     const input = e as unknown as { add?: unknown; remove?: unknown; replyLanguage?: unknown }
     const current = restore(await $.store.get(await storeKey($)))
     const errors: string[] = []
@@ -380,10 +337,18 @@ export const register: Register = on => {
     const form = await read($, draft)
     const waiting = await read($, confirming)
     const name = await read($, project)
-    const isEmpty = current.notes.length === 0 && current.replyLanguage === null
     const lastAsked = await read($, asked)
-    const sentAt = await $.clock.now()
-    const sent = lastAsked !== null && sentAt - lastAsked.at < SENT_SHOWN_MS ? lastAsked : null
+    const working = await read($, running)
+    const now = await $.clock.now()
+    const sent = working !== null ? working.what : lastAsked !== null && now - lastAsked.at < SENT_SHOWN_MS ? lastAsked.what : null
+
+    // "Заполнить" and "Разобрать" are needed once: gone when Claude has done them, and while it does.
+    const offers = (what: Ask) => (what === 'update' || current.ran[what] === null) && working?.what !== what
+    const hints: string[] = []
+    if (offers('fill')) hints.push('Заполнить: Claude прочитает README, CLAUDE.md, деплой и git и запишет сюда то, чего в файлах нет. Чего не найдёт, спросит у тебя.')
+    if (offers('sort')) hints.push('Разобрать: всё про клиента переедет из CLAUDE.md сюда, всё про код отсюда в CLAUDE.md. Сначала Claude покажет список и спросит.')
+    hints.push('Обновить: Claude пройдёт по проекту и коду, добавит важное, чего здесь ещё нет, и поправит устаревшее.')
+    if (offers('fill') || offers('sort')) hints.push('Заполнить и Разобрать нужны один раз: кнопка пропадёт, когда Claude её выполнит.')
 
     const heading = (key: string, text: string) => (
       <Box key={key} marginBottom={1}>
@@ -395,13 +360,6 @@ export const register: Register = on => {
       <Box flexDirection="column">
         {heading('h-title', 'ПАСПОРТ ПРОЕКТА')}
         <Text>{name}</Text>
-        {mode.autoLearn && (
-          <Box marginTop={1}>
-            <Text dimColor wrap="wrap">
-              Пополняется сам из твоих сообщений во всех чатах проекта.
-            </Text>
-          </Box>
-        )}
 
         <Box marginTop={2} flexDirection="column">
           {heading('h-lang', 'НА КАКОМ ЯЗЫКЕ ПИСАТЬ КЛИЕНТУ')}
@@ -470,7 +428,6 @@ export const register: Register = on => {
                         {note.text}
                         {note.by === 'claude' ? <Text dimColor> · Claude</Text> : ''}
                         {note.by === 'chat' ? <Text dimColor> · из чата</Text> : ''}
-                        {note.by === 'chat' && sentAt - note.at < NEW_MS ? <Text color="success"> · новое</Text> : ''}
                       </Text>
                     </Box>
                     <Box flexShrink={0} marginLeft={1}>
@@ -528,22 +485,29 @@ export const register: Register = on => {
 
         <Box marginTop={2} flexDirection="column">
           {heading('h-fill', 'ИЗ ПРОЕКТА')}
-          <Text dimColor wrap="wrap">
-            Заполнить: Claude прочитает README, CLAUDE.md, деплой и git и запишет сюда то, чего в файлах нет. Чего не найдёт, спросит у тебя.
-          </Text>
-          <Box marginTop={1}>
-            <Text dimColor wrap="wrap">
-              Разобрать: всё про клиента переедет из CLAUDE.md сюда, всё про код отсюда в CLAUDE.md. Сначала Claude покажет список и спросит.
-            </Text>
-          </Box>
+          {hints.map((hint, index) => (
+            <Box key={`hint-${index}`} {...(index > 0 ? { marginTop: 1 } : {})}>
+              <Text dimColor wrap="wrap">
+                {hint}
+              </Text>
+            </Box>
+          ))}
           <Box marginTop={1} gap={1} flexWrap="wrap">
-            <Button key="pp-fill" variant="primary" label={isEmpty ? 'Заполнить из проекта' : 'Дополнить из проекта'} onPress={() => void askClaude($, 'fill', FILL_PROMPT)} />
-            <Button key="pp-sort" label="Разобрать с CLAUDE.md" onPress={() => void askClaude($, 'sort', SORT_PROMPT)} />
+            {offers('fill') && <Button key="pp-fill" variant="primary" label="Заполнить из проекта" onPress={() => void askClaude($, 'fill')} />}
+            {offers('sort') && <Button key="pp-sort" label="Разобрать с CLAUDE.md" onPress={() => void askClaude($, 'sort')} />}
+            <Button key="pp-update" {...(offers('fill') ? {} : { variant: 'primary' as const })} label="Обновить" onPress={() => void askClaude($, 'update')} />
           </Box>
+          {current.ran.update !== null && (
+            <Box marginTop={1}>
+              <Text dimColor wrap="wrap">
+                Последнее обновление: {whenText(current.ran.update, now)}.
+              </Text>
+            </Box>
+          )}
           {sent !== null && (
             <Box marginTop={1}>
               <Text color="success" wrap="wrap">
-                ✓ Передал Claude: {ASKED_WORDS[sent.what]}. Ответ будет в чате.
+                ✓ Передал Claude: {ASKED_WORDS[sent]}. Ответ будет в чате.
               </Text>
             </Box>
           )}
@@ -556,21 +520,12 @@ export const register: Register = on => {
             <Button key="pp-autoopen" label={mode.autoOpen ? 'да' : 'нет'} onPress={() => void toggle($, 'autoOpen')} />
           </Box>
           <Box marginTop={1} justifyContent="space-between">
-            <Text>Пополнять из чатов</Text>
-            <Button key="pp-learn" label={mode.autoLearn ? 'да' : 'нет'} onPress={() => void toggle($, 'autoLearn')} />
-          </Box>
-          <Box marginTop={1} justifyContent="space-between">
             <Text>Записи Claude</Text>
             <Button key="pp-ask" label={mode.askBeforeAdd ? 'с вопросом' : 'без вопроса'} onPress={() => void toggle($, 'askBeforeAdd')} />
           </Box>
           <Box marginTop={1}>
             <Text dimColor wrap="wrap">
-              Пополнять из чатов: после ответа Claude смотрит твои сообщения и сам записывает сюда важное про клиента с пометкой "из чата". Лишнее убери крестиком.
-            </Text>
-          </Box>
-          <Box marginTop={1}>
-            <Text dimColor wrap="wrap">
-              Записи Claude: когда ты просишь что-то запомнить, Claude спрашивает перед записью или пишет сразу.
+              Записи Claude: спрашивать перед тем, как Claude запишет что-то в паспорт, или писать сразу.
             </Text>
           </Box>
         </Box>

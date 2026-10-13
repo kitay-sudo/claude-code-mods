@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { addNote, briefing, checkText, emptyPassport, looksSecret, restore } from '../hooks/notes'
+import { addNote, briefing, checkText, emptyPassport, looksSecret, restore, whenText } from '../hooks/notes'
 import type { Passport } from '../types'
 
 test('a note is one short line, and never a secret', () => {
@@ -37,4 +37,17 @@ test('the model reads the passport by section, the client language first', () =>
   expect(text).toContain('Клиент и общение:\n- [n1] Клиент: Денис, Молдова')
   expect(text).toContain('Правила и тонкости:\n- [n2] Логотип не трогать')
   expect(briefing(emptyPassport(), 'tool')).toContain('This project has no passport yet')
+})
+
+test('a passport from before the marks counts as filled when Claude wrote in it', () => {
+  const old = { replyLanguage: null, next: 3, notes: [{ id: 'n1', section: 'client', text: 'Клиент: Денис', at: 7, by: 'claude' }] }
+  expect(restore(old).ran).toEqual({ fill: 7, sort: null, update: null })
+  expect(restore({ ...old, notes: [{ ...old.notes[0], by: 'person' }] }).ran.fill).toBeNull()
+  expect(restore({ ...old, ran: { fill: null, sort: 9 } }).ran).toEqual({ fill: null, sort: 9, update: null })
+})
+
+test('the last update reads as today or as a date', () => {
+  const at = new Date(2026, 9, 13, 9, 5).getTime()
+  expect(whenText(at, new Date(2026, 9, 13, 18, 0).getTime())).toBe('сегодня в 09:05')
+  expect(whenText(at, new Date(2026, 9, 15, 10, 0).getTime())).toBe('13.10 в 09:05')
 })

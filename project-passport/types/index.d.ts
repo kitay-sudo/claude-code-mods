@@ -8,9 +8,12 @@ export type Note = {
   text: string
   /** When it was written, in `$.clock.now()` ms. */
   at: number
-  /** The person in the pane, Claude through the tool, or picked from the chat by itself. */
+  /** The person in the pane, Claude through the tool, or (0.7.0 only) picked from the chat. */
   by: 'person' | 'claude' | 'chat'
 }
+
+/** What a button of the pane hands to Claude: fill and sort once, update any time. */
+export type Ask = 'fill' | 'sort' | 'update'
 
 /** What the project's passport holds. */
 export type Passport = {
@@ -19,6 +22,8 @@ export type Passport = {
   notes: Note[]
   /** The next note number. */
   next: number
+  /** When Claude last finished each request, in ms; null while never. */
+  ran: Record<Ask, number | null>
 }
 
 /** How the passport behaves, the same in every project. */
@@ -27,8 +32,6 @@ export type PassportSettings = {
   autoOpen: boolean
   /** Ask before a note the model writes is kept. */
   askBeforeAdd: boolean
-  /** Pick what is worth keeping from the person's messages, without asking. */
-  autoLearn: boolean
 }
 
 /** What the person typed into the add-a-note form. */
@@ -49,9 +52,9 @@ declare module 'claude-code' {
       /** The project's folder name, for the pane's title. */
       project: string
       /** The last request a button handed to Claude, and when: shown under the buttons, a repeat soon after ignored. */
-      asked: { what: 'fill' | 'sort'; at: number } | null
-      /** What the person wrote since the passport last looked at the chat. */
-      heard: string[]
+      asked: { what: Ask; at: number } | null
+      /** The request Claude is working on now, and its turn. */
+      running: { what: Ask; turnId: string } | null
     }
   }
 }
