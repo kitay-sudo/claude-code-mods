@@ -6,23 +6,50 @@
 // The /passport pane shows and edits it, opens by itself when a session starts
 // in a project that has one, and fills it in one press by asking the model to
 // read the project. The model adds what it learns with `passport_update`; the
-// person confirms each change (or switches that off in the pane).
+// person confirms each change (or switches that off in the pane). After an
+// answer it also picks, by itself, what is worth keeping from the person's own
+// messages (see learnPrompt). Every chat of the project reads the same store
+// and looks at it again every few seconds, so a change shows in all of them.
 
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderElement } from 'claude-code'
 
-import type { NoteDraft, Passport, PassportSettings, Section } from '../types'
-import { LANGUAGES, SECTIONS, addNote, briefing, checkText, describeChanges, emptyPassport, isSection, removeNote, restore } from './notes'
+import type { Note, NoteDraft, Passport, PassportSettings, Section } from '../types'
+import {
+  LANGUAGES,
+  SECTIONS,
+  addNote,
+  applyLearned,
+  briefing,
+  checkText,
+  describeChanges,
+  emptyPassport,
+  isNothing,
+  isSection,
+  learnPrompt,
+  parseLearned,
+  removeNote,
+  restore,
+  worthLearning,
+} from './notes'
+import type { Learned } from './notes'
 
 const PANE = 'project-passport'
 const PANE_TITLE = 'Паспорт проекта'
 const TOOL = 'mcp__project-passport__passport_update'
 const SETTINGS_KEY = 'settings'
-const DEFAULT_SETTINGS: PassportSettings = { autoOpen: true, askBeforeAdd: true }
+const DEFAULT_SETTINGS: PassportSettings = { autoOpen: true, askBeforeAdd: true, autoLearn: true }
 const EMPTY_DRAFT: NoteDraft = { section: 'rules', text: '', error: '' }
 // The notes' numbers stand in a column of this width.
 const NUMBER_WIDTH = 4
 const LANGUAGE_LABELS = { ru: 'RU', en: 'EN', 'ru+en': 'RU+EN' } as const
+// How often a chat looks whether another chat of the project changed the passport.
+const SYNC_MS = 4_000
+// A note picked from the chat is marked new this long.
+const NEW_MS = 24 * 60 * 60 * 1000
+// Prompts the person wrote: at the prompt, through Remote Control, or in the app.
+const PERSON = new Set(['composer', 'bridge', 'sdk'])
+const HEARD_KEPT = 20
 
 const FILL_PROMPT =
   'Заполни паспорт этого проекта. Прочитай README, CLAUDE.md, файлы пакета, скрипты деплоя и git remote, но в паспорт ' +
@@ -72,29 +99,51 @@ const draft = atom({ plugin: 'project-passport', key: 'draft' } as const, EMPTY_
 const confirming = atom({ plugin: 'project-passport', key: 'confirming' } as const, null)
 const project = atom({ plugin: 'project-passport', key: 'project' } as const, '')
 const asked = atom({ plugin: 'project-passport', key: 'asked' } as const, null)
+const heard = atom({ plugin: 'project-passport', key: 'heard' } as const, [] as string[])
 // A second press within this time is the same request: it is not sent again.
 const REPEAT_MS = 15_000
 // How long "✓ Передал Claude" stays under the buttons.
 const SENT_SHOWN_MS = 60_000
 const ASKED_WORDS = { fill: 'заполнить паспорт', sort: 'разобрать паспорт и CLAUDE.md' } as const
 
+function folderOf(cwd: string): string {
+  return cwd.replace(/\\/g, '/').replace(/\/+$/, '')
+}
+
 async function storeKey($: EngineInterface): Promise<string> {
-  const cwd = await $.session.cwd()
-  return `passport:${cwd.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()}`
+  return `passport:${folderOf(await $.session.cwd()).toLowerCase()}`
+}
+
+function settingsOf(raw: unknown): PassportSettings {
+  const mode = (raw ?? {}) as Partial<PassportSettings>
+  return { autoOpen: mode.autoOpen !== false, askBeforeAdd: mode.askBeforeAdd !== false, autoLearn: mode.autoLearn !== false }
 }
 
 async function load($: EngineInterface): Promise<void> {
   const cwd = await $.session.cwd()
-  const kept = await $.store.get(await storeKey($))
-  const mode = (await $.store.get(SETTINGS_KEY)) as Partial<PassportSettings> | undefined
-  await update($, passport, () => restore(kept))
-  await update($, settings, () => ({ autoOpen: mode?.autoOpen !== false, askBeforeAdd: mode?.askBeforeAdd !== false }))
-  await update($, project, () => cwd.replace(/\\/g, '/').replace(/\/+$/, '').split('/').pop() ?? cwd)
+  const kept = restore(await $.store.get(await storeKey($)))
+  const mode = settingsOf(await $.store.get(SETTINGS_KEY))
+  await update($, passport, () => kept)
+  await update($, settings, () => mode)
+  await update($, project, () => folderOf(cwd).split('/').pop() ?? cwd)
 }
 
-async function keep($: EngineInterface, next: Passport): Promise<void> {
-  await $.store.set(await storeKey($), next)
+/** Whatever another chat of this project wrote, shown here too. */
+async function refresh($: EngineInterface): Promise<void> {
+  const fresh = restore(await $.store.get(await storeKey($)))
+  if (JSON.stringify(fresh) !== JSON.stringify(await read($, passport))) await update($, passport, () => fresh)
+  const mode = settingsOf(await $.store.get(SETTINGS_KEY))
+  if (JSON.stringify(mode) !== JSON.stringify(await read($, settings))) await update($, settings, () => mode)
+}
+
+/** A change made on what the store holds now: another chat of the project may have written since this one looked. */
+async function change($: EngineInterface, fn: (current: Passport) => Passport): Promise<{ before: Passport; next: Passport }> {
+  const key = await storeKey($)
+  const before = restore(await $.store.get(key))
+  const next = fn(before)
+  if (next !== before) await $.store.set(key, next)
   await update($, passport, () => next)
+  return { before, next }
 }
 
 async function keepSettings($: EngineInterface, next: PassportSettings): Promise<void> {
@@ -131,41 +180,40 @@ async function personAdd($: EngineInterface): Promise<void> {
     return
   }
   const at = await $.clock.now()
-  const before = await read($, passport)
-  const next = addNote(before, { section: form.section, text: checked.text, at, by: 'person' })
-  await keep($, next)
+  const { before, next } = await change($, current => addNote(current, { section: form.section, text: checked.text, at, by: 'person' }))
   await update($, draft, one => ({ ...one, text: '', error: '' }))
   const title = SECTIONS.find(section => section.id === form.section)?.title ?? ''
   if (next !== before) await tell($, `Пользователь добавил в паспорт проекта (${title}): ${checked.text}`)
 }
 
-async function editDraft($: EngineInterface, change: Partial<NoteDraft>): Promise<void> {
-  await update($, draft, one => ({ ...one, ...change, error: '' }))
+async function editDraft($: EngineInterface, edit: Partial<NoteDraft>): Promise<void> {
+  await update($, draft, one => ({ ...one, ...edit, error: '' }))
 }
 
 async function setLanguage($: EngineInterface, language: 'ru' | 'en' | 'ru+en'): Promise<void> {
-  const current = await read($, passport)
-  const next = current.replyLanguage === language ? null : language
-  await keep($, { ...current, replyLanguage: next })
+  const { next: changed } = await change($, current => ({ ...current, replyLanguage: current.replyLanguage === language ? null : language }))
+  const next = changed.replyLanguage
   await tell($, next === null ? 'Пользователь убрал язык общения с клиентом из паспорта.' : `Пользователь указал в паспорте: клиенту пишем ${LANGUAGES[next]}.`)
 }
 
 async function deleteNote($: EngineInterface, id: string): Promise<void> {
   await update($, confirming, () => null)
-  const current = await read($, passport)
-  const note = current.notes.find(one => one.id === id)
-  await keep($, removeNote(current, id))
+  let note: Note | undefined
+  await change($, current => {
+    note = current.notes.find(one => one.id === id)
+    return removeNote(current, id)
+  })
   if (note !== undefined) await tell($, `Пользователь убрал из паспорта проекта: ${note.text}`)
 }
 
 /** Every note of one section taken away, after the second press. */
 async function clearSection($: EngineInterface, section: Section): Promise<void> {
   await update($, confirming, () => null)
-  const current = await read($, passport)
-  const gone = current.notes.filter(note => note.section === section)
-  let next = current
-  for (const note of gone) next = removeNote(next, note.id)
-  await keep($, next)
+  let gone: Note[] = []
+  await change($, current => {
+    gone = current.notes.filter(note => note.section === section)
+    return gone.reduce((next, note) => removeNote(next, note.id), current)
+  })
   const title = SECTIONS.find(one => one.id === section)?.title ?? section
   if (gone.length > 0) await tell($, `Пользователь очистил раздел паспорта "${title}": убрано заметок ${gone.length}.`)
 }
@@ -185,22 +233,54 @@ async function askClaude($: EngineInterface, what: 'fill' | 'sort', text: string
   }
 }
 
-async function toggleAutoOpen($: EngineInterface): Promise<void> {
-  const mode = await read($, settings)
-  await keepSettings($, { ...mode, autoOpen: !mode.autoOpen })
+async function toggle($: EngineInterface, name: keyof PassportSettings): Promise<void> {
+  const mode = settingsOf(await $.store.get(SETTINGS_KEY))
+  await keepSettings($, { ...mode, [name]: !mode[name] })
 }
 
-async function toggleAsk($: EngineInterface): Promise<void> {
-  const mode = await read($, settings)
-  await keepSettings($, { ...mode, askBeforeAdd: !mode.askBeforeAdd })
+// --- From the chat ---------------------------------------------------------
+
+// The passport tool ran this turn: the model and the person have just settled
+// it (a «Отмена» included), so the chat is not looked at again for it.
+let toolRan = false
+let learning = false
+let syncTimer: { cancel: () => void } | null = null
+
+async function hear($: EngineInterface, text: string): Promise<void> {
+  if (text.trim() === '') return
+  await update($, heard, list => [...list, text].slice(-HEARD_KEPT))
+}
+
+/** What the person wrote since the last look, read by a fork; what is worth keeping goes in at once. */
+async function learn($: EngineInterface): Promise<void> {
+  const said = await read($, heard)
+  if (said.length === 0 || !worthLearning(said)) return
+  await update($, heard, () => [])
+  const now = restore(await $.store.get(await storeKey($)))
+  const reply = await $.model.fork({ prompt: learnPrompt(now, said) })
+  if (!reply.isAnswered) return
+  const at = await $.clock.now()
+  let learned: Learned = { adds: [], replaces: [] }
+  const { before, next } = await change($, current => {
+    learned = parseLearned(reply.text, current)
+    return isNothing(learned) ? current : applyLearned(current, learned, at)
+  })
+  if (next === before) return
+  const parts = next.notes.filter(note => !before.notes.some(old => old.id === note.id)).map(note => note.text)
+  if (learned.replyLanguage !== undefined) parts.push(`клиенту пишем ${LANGUAGES[learned.replyLanguage]}`)
+  if (parts.length > 0) $.ui.toast(`Паспорт пополнен из чата: ${parts[0]}${parts.length > 1 ? `, и ещё ${parts.length - 1}` : ''}`)
 }
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await load($)
     await update($, confirming, () => null)
+    await update($, heard, () => [])
     await $.command.register({ name: 'passport', description: 'Открыть паспорт проекта: клиент, язык общения, правила и тонкости' })
     await $.tool.register({ name: 'passport_update', description: TOOL_DESCRIPTION, inputSchema: TOOL_SCHEMA, isDeferred: false })
+    // Another chat of the project wrote: this one shows it within seconds.
+    syncTimer?.cancel()
+    syncTimer = $.clock.every(SYNC_MS, () => void refresh($).catch(() => undefined))
     // Beside the task panel in every chat, an empty one inviting to be filled.
     if ((await read($, settings)).autoOpen) void openPane($).catch(() => undefined)
     return next(e)
@@ -212,14 +292,41 @@ export const register: Register = on => {
     return e.origin.kind === 'plugin' ? {} : { text: 'Паспорт проекта открыт.' }
   })
 
+  on('prompt.submit', async ($, e, next) => {
+    const result = await next(e)
+    if (PERSON.has(e.origin.kind) && (await read($, settings)).autoLearn) await hear($, e.text)
+    return result
+  })
+
+  on('turn.complete', async ($, e, next) => {
+    const result = await next(e)
+    if (e.agentId !== undefined) return result
+    if (toolRan) {
+      toolRan = false
+      await update($, heard, () => [])
+      return result
+    }
+    if (e.reason === 'answer' && !learning && (await read($, settings)).autoLearn) {
+      learning = true
+      void learn($)
+        .catch(error => $.ui.log(`project-passport: ${String(error)}`, { to: 'debug' }))
+        .finally(() => {
+          learning = false
+        })
+    }
+    return result
+  })
+
   on('prompt.context', async ($, e, next) => {
     const context = await next(e)
+    await refresh($).catch(() => undefined)
     return { ...context, blocks: [...context.blocks, { name: 'projectPassport', text: briefing(await read($, passport), TOOL) }] }
   })
 
   on('tool.call', { tool: TOOL }, async ($, e) => {
+    toolRan = true
     const input = e as unknown as { add?: unknown; remove?: unknown; replyLanguage?: unknown }
-    const current = await read($, passport)
+    const current = restore(await $.store.get(await storeKey($)))
     const errors: string[] = []
     const adds: { section: Section; text: string }[] = []
     for (const one of Array.isArray(input.add) ? input.add : []) {
@@ -250,11 +357,12 @@ export const register: Register = on => {
     }
 
     const at = await $.clock.now()
-    let next = current
-    for (const note of removes) next = removeNote(next, note.id)
-    for (const add of adds) next = addNote(next, { ...add, at, by: 'claude' })
-    if (replyLanguage !== undefined) next = { ...next, replyLanguage }
-    await keep($, next)
+    await change($, now => {
+      let next = now
+      for (const note of removes) next = removeNote(next, note.id)
+      for (const add of adds) next = addNote(next, { ...add, at, by: 'claude' })
+      return replyLanguage === undefined ? next : { ...next, replyLanguage }
+    })
     $.ui.toast(`Паспорт проекта: ${[adds.length > 0 ? `+${adds.length}` : '', removes.length > 0 ? `−${removes.length}` : '', replyLanguage !== undefined ? 'язык' : ''].filter(Boolean).join(' ')}`)
     return { result: `Записано в паспорт: ${summary}.` }
   })
@@ -287,6 +395,13 @@ export const register: Register = on => {
       <Box flexDirection="column">
         {heading('h-title', 'ПАСПОРТ ПРОЕКТА')}
         <Text>{name}</Text>
+        {mode.autoLearn && (
+          <Box marginTop={1}>
+            <Text dimColor wrap="wrap">
+              Пополняется сам из твоих сообщений во всех чатах проекта.
+            </Text>
+          </Box>
+        )}
 
         <Box marginTop={2} flexDirection="column">
           {heading('h-lang', 'НА КАКОМ ЯЗЫКЕ ПИСАТЬ КЛИЕНТУ')}
@@ -354,6 +469,8 @@ export const register: Register = on => {
                       <Text wrap="wrap">
                         {note.text}
                         {note.by === 'claude' ? <Text dimColor> · Claude</Text> : ''}
+                        {note.by === 'chat' ? <Text dimColor> · из чата</Text> : ''}
+                        {note.by === 'chat' && sentAt - note.at < NEW_MS ? <Text color="success"> · новое</Text> : ''}
                       </Text>
                     </Box>
                     <Box flexShrink={0} marginLeft={1}>
@@ -436,11 +553,25 @@ export const register: Register = on => {
           {heading('h-settings', 'НАСТРОЙКИ')}
           <Box justifyContent="space-between">
             <Text>Открывать при старте чата</Text>
-            <Button key="pp-autoopen" label={mode.autoOpen ? 'да' : 'нет'} onPress={() => void toggleAutoOpen($)} />
+            <Button key="pp-autoopen" label={mode.autoOpen ? 'да' : 'нет'} onPress={() => void toggle($, 'autoOpen')} />
+          </Box>
+          <Box marginTop={1} justifyContent="space-between">
+            <Text>Пополнять из чатов</Text>
+            <Button key="pp-learn" label={mode.autoLearn ? 'да' : 'нет'} onPress={() => void toggle($, 'autoLearn')} />
           </Box>
           <Box marginTop={1} justifyContent="space-between">
             <Text>Записи Claude</Text>
-            <Button key="pp-ask" label={mode.askBeforeAdd ? 'с вопросом' : 'без вопроса'} onPress={() => void toggleAsk($)} />
+            <Button key="pp-ask" label={mode.askBeforeAdd ? 'с вопросом' : 'без вопроса'} onPress={() => void toggle($, 'askBeforeAdd')} />
+          </Box>
+          <Box marginTop={1}>
+            <Text dimColor wrap="wrap">
+              Пополнять из чатов: после ответа Claude смотрит твои сообщения и сам записывает сюда важное про клиента с пометкой "из чата". Лишнее убери крестиком.
+            </Text>
+          </Box>
+          <Box marginTop={1}>
+            <Text dimColor wrap="wrap">
+              Записи Claude: когда ты просишь что-то запомнить, Claude спрашивает перед записью или пишет сразу.
+            </Text>
           </Box>
         </Box>
       </Box>

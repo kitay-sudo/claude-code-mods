@@ -8,7 +8,8 @@ export type Note = {
   text: string
   /** When it was written, in `$.clock.now()` ms. */
   at: number
-  by: 'person' | 'claude'
+  /** The person in the pane, Claude through the tool, or picked from the chat by itself. */
+  by: 'person' | 'claude' | 'chat'
 }
 
 /** What the project's passport holds. */
@@ -26,6 +27,8 @@ export type PassportSettings = {
   autoOpen: boolean
   /** Ask before a note the model writes is kept. */
   askBeforeAdd: boolean
+  /** Pick what is worth keeping from the person's messages, without asking. */
+  autoLearn: boolean
 }
 
 /** What the person typed into the add-a-note form. */
@@ -47,6 +50,8 @@ declare module 'claude-code' {
       project: string
       /** The last request a button handed to Claude, and when: shown under the buttons, a repeat soon after ignored. */
       asked: { what: 'fill' | 'sort'; at: number } | null
+      /** What the person wrote since the passport last looked at the chat. */
+      heard: string[]
     }
   }
 }
