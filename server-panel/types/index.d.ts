@@ -63,10 +63,8 @@ export type Vitals = {
   diskFreeMb: number | null
   /** What mainly runs the project; `docker` only in checks from before 0.8. */
   runtime: Runtime
-  /** The project's own: what runs from its folder, and nginx. */
+  /** The project's own: what runs from its folder, and nginx. Other projects' never leave the server. */
   services: Service[]
-  /** The rest of the machine: other projects' containers and pm2 processes. */
-  others: Service[]
   /** Docker is on the server. */
   hasDocker: boolean
   /** The last error lines of the project's logs, newest last. */
@@ -118,8 +116,6 @@ declare module 'claude-code' {
       confirming: string | null
       /** Whether the new-server form is open while servers already exist. */
       adding: boolean
-      /** The servers whose other processes (other projects') are unfolded. */
-      othersOpen: string[]
     }
   }
 }

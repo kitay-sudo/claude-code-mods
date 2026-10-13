@@ -41,8 +41,6 @@ import {
   logSources,
   logsCommand,
   machineLines,
-  otherServices,
-  othersLine,
   parseVitals,
   runtimeTitle,
   serviceLine,
@@ -79,7 +77,6 @@ const setup = atom({ plugin: 'server-panel', key: 'setup' } as const, null)
 const draft = atom({ plugin: 'server-panel', key: 'draft' } as const, EMPTY_DRAFT)
 const confirming = atom({ plugin: 'server-panel', key: 'confirming' } as const, null)
 const adding = atom({ plugin: 'server-panel', key: 'adding' } as const, false)
-const othersOpen = atom({ plugin: 'server-panel', key: 'othersOpen' } as const, [] as string[])
 
 // The connect assistant's poll; a reload drops it, and «Подключить» starts it again.
 let setupTimer: Timer | undefined
@@ -316,11 +313,6 @@ async function readVitals($: EngineInterface, server: Server): Promise<Vitals | 
 async function personRefresh($: EngineInterface, name: string): Promise<void> {
   const server = (await read($, servers)).find(one => one.name === name)
   if (server !== undefined) await checkHealth($, server)
-}
-
-/** The other projects' processes on a server: shown on a press, folded on the next. */
-async function toggleOthers($: EngineInterface, name: string): Promise<void> {
-  await update($, othersOpen, open => (open.includes(name) ? open.filter(one => one !== name) : [...open, name]))
 }
 
 /** The project's recent logs, run as the person's command so they land in the journal and reach the model. */
@@ -758,7 +750,6 @@ export const register: Register = on => {
     const waiting = await read($, confirming)
     const assistant = await read($, setup)
     const form = await read($, draft)
-    const unfolded = await read($, othersOpen)
     const isAdding = (await read($, adding)) || list.length === 0
     const recent = history.slice(-SHOWN_RUNS).reverse()
     const latest = history.at(-1)
@@ -866,7 +857,7 @@ export const register: Register = on => {
                   {machineLines(state.vitals).map(line => (
                     <Text key={`m-${line}`}>{line}</Text>
                   ))}
-                  {/* The project's own processes; the rest of the machine folded under them. */}
+                  {/* The project's own processes: other projects' on the machine are not its business. */}
                   <Box marginTop={1} flexDirection="column">
                     {shownServices(state.vitals).map(service => (
                       <Box key={`svc-${server.name}-${service.name}`} gap={1}>
@@ -877,7 +868,7 @@ export const register: Register = on => {
                     ))}
                     {server.dir === undefined ? (
                       <Text dimColor wrap="wrap">
-                        Папка проекта не указана, поэтому его процессы не отделить от остальных.
+                        Укажи папку проекта на сервере, и здесь появятся его процессы.
                       </Text>
                     ) : hasNoContainers(state.vitals) ? (
                       <Text dimColor>контейнеров в проекте нет</Text>
@@ -885,29 +876,6 @@ export const register: Register = on => {
                       shownServices(state.vitals).length === 0 && <Text dimColor>процессов проекта не найдено</Text>
                     )}
                   </Box>
-                  {othersLine(state.vitals) !== '' && (
-                    <Box marginTop={1} flexDirection="column">
-                      <Box>
-                        <Button
-                          key={`others-${server.name}`}
-                          label={unfolded.includes(server.name) ? 'Скрыть' : `${othersLine(state.vitals).slice(0, 1).toUpperCase()}${othersLine(state.vitals).slice(1)}`}
-                          onPress={() => void toggleOthers($, server.name)}
-                        />
-                      </Box>
-                      {unfolded.includes(server.name) && (
-                        <Box marginTop={1} flexDirection="column">
-                          <Text dimColor>Не из этого проекта:</Text>
-                          {otherServices(state.vitals).map(service => (
-                            <Box key={`other-${server.name}-${service.kind}-${service.name}`} gap={1}>
-                              <Text dimColor>●</Text>
-                              <Text dimColor>{service.name}</Text>
-                              <Text dimColor>{serviceLine(service)}</Text>
-                            </Box>
-                          ))}
-                        </Box>
-                      )}
-                    </Box>
-                  )}
                   {alerts(state.vitals).length > 0 && (
                     <Box marginTop={1} flexDirection="column">
                       {alerts(state.vitals).map(alert => (

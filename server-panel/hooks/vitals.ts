@@ -7,7 +7,8 @@
 // project folder: a container is the project's when Docker Compose started it
 // from that folder (its com.docker.compose.project.working_dir label), a pm2
 // process when it runs from there, a systemd service when its unit starts it
-// there. The rest of the machine is only counted, apart. nginx, the front of
+// there. The rest of the machine is not the project's business: it is sorted
+// out on the server and its names never leave it. nginx, the front of
 // most sites, is shown when it runs or has fallen over. The errors come from
 // the project's own processes and log files (Laravel, Symfony, WordPress,
 // logs/), and from nginx when nothing else runs it.
@@ -32,21 +33,21 @@ const PROJECT_LOGS = 'storage/logs/*.log var/log/*.log wp-content/debug.log logs
 // The project's three newest log files, one path a line.
 const NEWEST_LOGS = `ls -t ${PROJECT_LOGS} 2>/dev/null | head -n 3`
 
-// Every container with its state and the folder Compose started it from; `1`
-// last when that is the project folder ($D, or $P with links resolved) or under it.
+// The project's containers with their state: those Compose started from the
+// project folder ($D, or $P with links resolved) or under it. No other leaves the server.
 const CONTAINERS =
   `CO=$(docker ps -a --format '{{.Names}}|{{.State}}|{{.Label "${COMPOSE_DIR}"}}' 2>/dev/null | head -n ${CONTAINERS_KEPT} | ` +
-  `while IFS='|' read -r n s w; do o=0; if [ -n "$D" ]; then case "$w" in "$D"|"$D"/*|"$P"|"$P"/*) o=1;; esac; fi; echo "ctr=$n|$s|$o"; done); ` +
-  `printf '%s\\n' "$CO"; OC=$(printf '%s\\n' "$CO" | awk -F'|' '$3==1{sub("^ctr=","",$1); print $1}')`
+  `while IFS='|' read -r n s w; do if [ -n "$D" ]; then case "$w" in "$D"|"$D"/*|"$P"|"$P"/*) echo "ctr=$n|$s";; esac; fi; done); ` +
+  `printf '%s\\n' "$CO"; OC=$(printf '%s\\n' "$CO" | awk -F'|' 'NF>1{sub("^ctr=","",$1); print $1}')`
 
 // pm2 knows its processes as JSON with their whole environment; only the name,
-// state, restarts, version and whether it runs from the project folder leave the server.
+// state, restarts and version of those that run from the project folder leave the server.
 const PM2_LIST =
   'PL=$(pm2 jlist 2>/dev/null | D="$D" P="$P" node -e \'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{' +
   'const ds=[process.env.D,process.env.P].filter(Boolean);const under=p=>typeof p==="string"&&ds.some(d=>p===d||p.startsWith(d+"/"));' +
   'for(const p of JSON.parse(s)){const e=p.pm2_env||{};' +
-  'console.log("pm2="+p.name+"|"+e.status+"|"+e.restart_time+"|"+(e.version||"")+"|"+(under(e.pm_cwd)||under(e.pm_exec_path)?1:0))}}catch(x){}})\'); ' +
-  `printf '%s\\n' "$PL"; PM=$(printf '%s\\n' "$PL" | awk -F'|' '$5==1{sub("^pm2=","",$1); print $1}')`
+  'if(under(e.pm_cwd)||under(e.pm_exec_path))console.log("pm2="+p.name+"|"+e.status+"|"+e.restart_time+"|"+(e.version||""))}}catch(x){}})\'); ' +
+  `printf '%s\\n' "$PL"; PM=$(printf '%s\\n' "$PL" | awk -F'|' 'NF>1{sub("^pm2=","",$1); print $1}')`
 
 // systemd units whose start command or working folder is the project folder ($D).
 const PROJECT_UNITS =
@@ -118,7 +119,6 @@ function service(kind: Service['kind'], name: string, state: string, restarts: s
 export function parseVitals(stdout: string): Vitals {
   const values = new Map<string, string>()
   const services: Service[] = []
-  const others: Service[] = []
   const errors: string[] = []
   const logFiles: string[] = []
   let isDirMissing = false
@@ -129,11 +129,11 @@ export function parseVitals(stdout: string): Vitals {
     if (at < 1) continue
     const key = line.slice(0, at)
     const value = line.slice(at + 1)
-    const [name = '', state = '', third, fourth, fifth] = value.split('|')
+    const [name = '', state = '', restarts, version] = value.split('|')
     if (key === 'ctr' && name.trim() !== '') {
-      ;(third === '1' ? services : others).push(service('container', name, state, undefined, undefined))
+      services.push(service('container', name, state, undefined, undefined))
     } else if (key === 'pm2' && name.trim() !== '') {
-      ;(fifth === '1' ? services : others).push(service('pm2', name, state, third, fourth))
+      services.push(service('pm2', name, state, restarts, version))
     } else if (key === 'unit' && name.trim() !== '') {
       services.push(service('systemd', name, state, undefined, undefined))
     } else if (key === 'nginx') {
@@ -171,7 +171,6 @@ export function parseVitals(stdout: string): Vitals {
     diskFreeMb: numberOf(diskFree),
     runtime,
     services,
-    others,
     hasDocker,
     errors,
     logFiles,
@@ -235,30 +234,6 @@ export function machineLines(vitals: Vitals): string[] {
 /** The project's own processes, as the card lists them. */
 export function shownServices(vitals: Vitals): Service[] {
   return vitals.services
-}
-
-/** The rest of the machine, kept apart; a check from before 0.8 has none. */
-export function otherServices(vitals: Vitals): Service[] {
-  return vitals.others ?? []
-}
-
-function plural(count: number, one: string, few: string, many: string): string {
-  const tens = count % 100
-  const units = count % 10
-  const word = tens >= 11 && tens <= 14 ? many : units === 1 ? one : units >= 2 && units <= 4 ? few : many
-  return `${count} ${word}`
-}
-
-/** The folded line for the rest of the machine: "ещё 4 контейнера на сервере"; empty when there is none. */
-export function othersLine(vitals: Vitals): string {
-  const rest = otherServices(vitals)
-  const containers = rest.filter(one => one.kind === 'container').length
-  const processes = rest.length - containers
-  const parts = [
-    containers > 0 ? plural(containers, 'контейнер', 'контейнера', 'контейнеров') : '',
-    processes > 0 ? plural(processes, 'процесс pm2', 'процесса pm2', 'процессов pm2') : '',
-  ].filter(part => part !== '')
-  return parts.length === 0 ? '' : `ещё ${parts.join(' и ')} на сервере`
 }
 
 /** Said in place of an empty list: Docker is on the server, none of its containers is the project's. */

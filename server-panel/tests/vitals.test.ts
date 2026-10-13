@@ -6,8 +6,6 @@ import {
   logSources,
   logsCommand,
   machineLines,
-  otherServices,
-  othersLine,
   parseVitals,
   runtimeTitle,
   serviceLine,
@@ -24,27 +22,16 @@ const COMPOSE = [
   'mem=1229/3891',
   'disk=93/1843',
   'docker=1',
-  'ctr=web|running|1',
-  'ctr=worker|exited|1',
+  'ctr=web|running',
+  'ctr=worker|exited',
   'logfile=storage/logs/laravel.log',
   'err=\u001b[31m2026-10-11 12:03 ERROR\u001b[0m   connection refused to db:5432',
   'err=Traceback (most recent call last):',
 ].join('\n')
 
-// acme-travel on prod: the site under pm2, another project's containers beside it.
-const ACME = [
-  'load=0.2',
-  'cpus=4',
-  'mem=2048/7900',
-  'disk=84/6349',
-  'docker=1',
-  'ctr=bank-bot-1|running|0',
-  'ctr=bank-web-1|running|0',
-  'ctr=bank-db-1|running|0',
-  'ctr=bank-redis-1|running|0',
-  'pm2=acme|online|3|1.4.0|1',
-  'nginx=active',
-].join('\n')
+// acme-travel on prod: the site under pm2. The other project's containers
+// beside it are sorted out on the server and never come back.
+const ACME = ['load=0.2', 'cpus=4', 'mem=2048/7900', 'disk=84/6349', 'docker=1', 'pm2=acme|online|3|1.4.0', 'nginx=active'].join('\n')
 
 const container = (name: string, state: string): Service => ({ kind: 'container', name, state, restarts: null, version: null })
 
@@ -58,7 +45,6 @@ test('one check reads the machine, the project\'s containers, the log files and 
     diskFreeMb: 1843,
     runtime: 'compose',
     services: [container('web', 'running'), container('worker', 'exited')],
-    others: [],
     hasDocker: true,
     errors: ['2026-10-11 12:03 ERROR connection refused to db:5432', 'Traceback (most recent call last):'],
     logFiles: ['storage/logs/laravel.log'],
@@ -71,26 +57,21 @@ test('one check reads the machine, the project\'s containers, the log files and 
   expect(serviceLine(vitals.services[0]!)).toBe('контейнер · работает')
 })
 
-test('another project\'s containers are only counted apart; the project\'s pm2 process and nginx are its own', () => {
+test('the project\'s pm2 process and nginx are its own; with no container of its own that is said', () => {
   const vitals = parseVitals(ACME)
   expect(shownServices(vitals).map(serviceLine)).toEqual(['pm2 · работает · v1.4.0 · перезапусков 3', 'работает'])
   expect(shownServices(vitals).map(one => one.name)).toEqual(['acme', 'nginx'])
-  expect(otherServices(vitals).map(one => one.name)).toEqual(['bank-bot-1', 'bank-web-1', 'bank-db-1', 'bank-redis-1'])
-  expect(othersLine(vitals)).toBe('ещё 4 контейнера на сервере')
   expect(hasNoContainers(vitals)).toBe(true)
   expect(runtimeTitle(vitals)).toBe('pm2')
-  // Nothing of another project is the project's alarm.
   expect(alerts(vitals)).toEqual([])
   expect(machineLines(vitals)[1]).toBe('диск сервера 84% · свободно 6,2 ГБ')
   expect(logSources(vitals)).toBe('pm2 acme')
 })
 
 test('pm2 processes come with their version and restarts, and a bare server still reads', () => {
-  const pm2 = parseVitals('pm2=api|online|4|2.0.1|1\npm2=cron|errored|12||1\npm2=other|online|0|N/A|0\n')
+  const pm2 = parseVitals('pm2=api|online|4|2.0.1\npm2=cron|errored|12|N/A\n')
   expect(pm2.runtime).toBe('pm2')
   expect(pm2.services.map(stateWord)).toEqual(['работает · v2.0.1 · перезапусков 4', 'упал · перезапусков 12'])
-  expect(otherServices(pm2).map(serviceLine)).toEqual(['pm2 · работает'])
-  expect(othersLine(pm2)).toBe('ещё 1 процесс pm2 на сервере')
   expect(alerts(pm2)).toEqual(['cron: упал · перезапусков 12'])
   // No Docker on the server: nothing said about containers.
   expect(hasNoContainers(pm2)).toBe(false)
@@ -119,33 +100,13 @@ test('nginx is shown while it runs or has fallen, never when switched off', () =
   expect(parseVitals('nginx=').services).toEqual([])
 })
 
-test('the folded line counts in Russian', () => {
-  const many = (containers: number, processes: number) =>
-    othersLine(
-      parseVitals(
-        [
-          ...Array.from({ length: containers }, (_, index) => `ctr=c${index}|running|0`),
-          ...Array.from({ length: processes }, (_, index) => `pm2=p${index}|online|0||0`),
-        ].join('\n'),
-      ),
-    )
-  expect(many(1, 0)).toBe('ещё 1 контейнер на сервере')
-  expect(many(5, 0)).toBe('ещё 5 контейнеров на сервере')
-  expect(many(11, 0)).toBe('ещё 11 контейнеров на сервере')
-  expect(many(21, 0)).toBe('ещё 21 контейнер на сервере')
-  expect(many(2, 3)).toBe('ещё 2 контейнера и 3 процесса pm2 на сервере')
-  expect(many(0, 0)).toBe('')
-})
-
 test('a check kept from before reads without the new fields', () => {
-  const old = { ...parseVitals('ctr=web|running|1'), others: undefined, hasDocker: undefined } as unknown as Vitals
-  expect(otherServices(old)).toEqual([])
-  expect(othersLine(old)).toBe('')
+  const old = { ...parseVitals('ctr=web|running'), hasDocker: undefined } as unknown as Vitals
   expect(hasNoContainers(old)).toBe(false)
   expect(serviceLine({ name: 'web', state: 'running', restarts: null } as unknown as Service)).toBe('работает')
 })
 
-test('the check is one sh line that enters the folder itself, sorts by the project folder and changes nothing', () => {
+test('the check is one sh line that enters the folder itself, keeps other projects on the server and changes nothing', () => {
   const server: Server = { name: 'prod', host: '1.2.3.4', user: 'root', port: 22, dir: '~/my app' }
   const args = vitalsArgs(server)
   const command = args.at(-1) ?? ''
@@ -156,8 +117,8 @@ test('the check is one sh line that enters the folder itself, sorts by the proje
   for (const word of [' rm ', 'docker restart', 'compose restart', 'systemctl restart', 'systemctl stop', 'systemctl start', 'prune', 'kill ', 'compose down', 'compose up', 'pm2 restart', 'pm2 stop']) {
     expect(command).not.toContain(word)
   }
-  // Containers by the folder Compose started them from, pm2 by where it runs from.
-  for (const part of ['com.docker.compose.project.working_dir', 'pm_cwd', 'pm_exec_path', 'pwd -P', 'systemctl is-active nginx']) {
+  // Containers by the folder Compose started them from, pm2 by where it runs from: only those are printed.
+  for (const part of ['com.docker.compose.project.working_dir', 'echo "ctr=$n|$s";; esac', 'if(under(e.pm_cwd)||under(e.pm_exec_path))console.log', 'pwd -P', 'systemctl is-active nginx']) {
     expect(command).toContain(part)
   }
   // Every stack's own log files are looked for in the project folder.
