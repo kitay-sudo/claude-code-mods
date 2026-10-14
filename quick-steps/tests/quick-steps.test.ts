@@ -82,6 +82,40 @@ test('the first suggestion is the recommended one, and the model is told to mark
   expect(rule).toContain('"(Рекомендую)"')
 })
 
+test('a suggested slash command runs as a command, not as a message', async ($, on) => {
+  const clock = mock.clock(on, { now: 0 })
+  const sent: string[] = []
+  const commands: { command: string; args: string }[] = []
+  on('command.list', () => ({ value: [{ name: 'report', description: 'Отчёт клиенту', source: 'plugin' as const }] }))
+  on('command.run', ($, e) => {
+    commands.push({ command: e.command, args: e.args })
+    return { text: '' }
+  })
+  on('model.fork', () => ({
+    value: {
+      isAnswered: true as const,
+      text: JSON.stringify(['/report за неделю', 'Закоммить изменения']),
+      usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+    },
+  }))
+  on('prompt.suggest', () => ({ isShown: true }))
+  on('prompt.submit', ($, e) => {
+    sent.push(e.text)
+    return { text: e.text }
+  })
+  on('turn.complete', ($, e) => ({ text: e.answer }))
+  on('ui.render', { component: 'AbovePrompt' }, () => ({ type: 'Box' }))
+  on('ui.toast', () => ({ value: undefined }))
+  on('ui.log', () => ({ value: undefined }))
+
+  await $.turn.complete({ answer: LONG_ANSWER, durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' })
+  await clock.settle()
+  const ui = await $.ui.mount({ plugin: 'quick-steps', surface: 'desktop', component: 'AbovePrompt', props: BAND })
+  await ui.press({ key: 's0' })
+  expect(commands).toEqual([{ command: 'report', args: 'за неделю' }])
+  expect(sent).toEqual([])
+})
+
 test('0 hides the suggestions without sending anything', async ($, on) => {
   const { clock, sent } = world(on)
   await $.turn.complete({ answer: LONG_ANSWER, durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' })

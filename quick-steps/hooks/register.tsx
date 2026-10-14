@@ -141,12 +141,20 @@ function show($: EngineInterface, nextView: View): void {
   $.ui.invalidate('ui.render')
 }
 
+// A prompt that starts with a slash is a command: the host runs it as one, as
+// if typed, and refuses it as a message.
 async function send($: EngineInterface, prompt: string): Promise<void> {
   show($, { kind: 'hidden' })
   try {
-    await $.prompt.submit({ text: prompt, asUser: true })
+    if (prompt.startsWith('/')) {
+      const space = prompt.indexOf(' ')
+      const command = (space === -1 ? prompt.slice(1) : prompt.slice(1, space)).trim()
+      await $.command.run({ command, args: space === -1 ? '' : prompt.slice(space + 1).trim() })
+    } else {
+      await $.prompt.submit({ text: prompt, asUser: true })
+    }
   } catch (error) {
-    $.ui.toast(`Не удалось отправить: ${String(error)}`)
+    $.ui.toast(`Не удалось ${prompt.startsWith('/') ? 'запустить' : 'отправить'} "${prompt}": ${error instanceof Error ? error.message : String(error)}`)
   }
 }
 
