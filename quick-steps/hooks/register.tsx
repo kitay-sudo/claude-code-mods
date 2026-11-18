@@ -1,19 +1,23 @@
 // quick-steps: when a turn ends, up to three likely next prompts in the shared
-// row above the prompt box; pressing one (its digit, or a click) sends it at
-// once, 0 hides them. The top one is also the box's dim Tab-to-take ghost text.
+// row above the prompt box; pressing one (its digit typed into the empty box, or
+// a click) sends it at once, 0 hides them. The top one is also the box's dim
+// Tab-to-take ghost text.
 //
 // A fork of next-steps by Thariq Shihipar (MIT), which writes the pressed
 // prompt into the box as a draft for the person to send. Here the press sends
 // it, so each button shows the whole prompt it sends: what is read is what
 // goes, and a prompt too long to show whole is not offered.
 //
-// The suggestions come from forking the session ($.model.fork, which shares
-// its prompt cache) and are model output over untrusted text: before any of it
-// reaches the screen, only what a person can see is kept (see `clean`).
+// The suggestions come from a cheap model shown a compact excerpt of the
+// conversation (suggest.ts), or, if it cannot answer or `suggestModel` is
+// "session", from forking the session ($.model.fork, which shares its prompt
+// cache). Either way they are model output over untrusted text: before any of it
+// reaches the screen, only what a person can see is kept (see `visible`).
 
 import type { CommandInfo, EngineInterface, Register, RenderElement } from 'claude-code'
 
 import { joinRow } from './status-row'
+import { HISTORY_MESSAGES, cheapPrompt, conversationExcerpt, digitPress } from './suggest'
 
 type View = { kind: 'hidden' } | { kind: 'loading'; turnId: string } | { kind: 'offer'; items: string[] }
 
@@ -86,10 +90,7 @@ function forkPrompt(skills: string): string {
     `${PROMPT_MAX} characters. Pressing one sends it at once, so each must be complete as written. Prefer the ` +
     'obvious next action (run the tests, commit, fix the thing you flagged, do the same for X) over generic ' +
     'ones. Order them best first: the first one is the step you recommend. ' +
-    'If the conversation is clearly finished or nothing useful comes to mind, return an empty list. ' +
-    "When the user's last request is a large or vague piece of work and no goal with \"done when\" criteria has " +
-    'been agreed yet, make the first suggestion a request to agree on them before any work starts (in Russian: ' +
-    '"Сначала уточним цель и критерии готовности").\n\n' +
+    'If the conversation is clearly finished or nothing useful comes to mind, return an empty list.\n\n' +
     (skills === ''
       ? ''
       : 'The user runs a skill or slash command by starting a prompt with its name. When one of them is ' +
@@ -100,6 +101,33 @@ function forkPrompt(skills: string): string {
         `<available-skills>\n${skills}\n</available-skills>\n\n`) +
     'Answer with ONLY a JSON array of strings, no prose, no code fence: ["<prompt>", ...]'
   )
+}
+
+// The model's raw reply. By default the cheap model over a compact excerpt of
+// the conversation (suggest.ts). If it cannot answer (not allowed, an API
+// error), the session's own fork, which reads the whole transcript from the
+// prompt cache. `model: 'session'` goes straight to the fork.
+async function suggestionText($: EngineInterface, answer: string, skills: string, model: string): Promise<string> {
+  if (model !== 'session') {
+    try {
+      // A plugin's read takes no `last`: it gets the transcript whole, the newest are kept here.
+      const read = await $.session.messages()
+      const messages = 'deny' in read ? [] : read.slice(-HISTORY_MESSAGES)
+      const { system, prompt } = cheapPrompt({
+        conversation: conversationExcerpt(messages, answer),
+        skills,
+        maxSuggestions: MAX_SUGGESTIONS,
+        maxChars: PROMPT_MAX,
+      })
+      const reply = await $.model.complete({ model, system, prompt, maxTokens: 1500, effort: 'medium' })
+      if (reply.isAnswered) return reply.text
+      $.ui.log(`${model} gave no suggestions (${reply.reason}); asking the session's model`, { to: 'debug' })
+    } catch (error) {
+      $.ui.log(`${model} failed: ${String(error)}; asking the session's model`, { to: 'debug' })
+    }
+  }
+  const reply = await $.model.fork({ prompt: forkPrompt(skills) })
+  return reply.isAnswered ? reply.text : ''
 }
 
 // A prompt that starts with a slash runs a command, so one naming a command
@@ -161,6 +189,9 @@ async function send($: EngineInterface, prompt: string): Promise<void> {
 export const register: Register = (on, options) => {
   const minTurnChars = typeof options?.minAnswerChars === 'number' ? options.minAnswerChars : 80
   const suggestsSkills = options?.suggestSkills !== false
+  // Which model thinks up the suggestions: an alias or model id, or "session" for the session's own model.
+  const suggestModel = typeof options?.suggestModel === 'string' && options.suggestModel.trim() !== '' ? options.suggestModel.trim() : 'haiku'
+  const digitKeys = options?.digitKeys !== false
 
   // A new turn (typed or pressed) hides whatever was offered.
   on('turn.start', async ($, e, next) => {
@@ -168,7 +199,19 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
-  // Turn over: ask the fork, detached, so the turn's completion never waits on it.
+  // A digit typed into an empty prompt box presses that suggestion, 0 hides them.
+  // The buttons' own hotkeys answer only while the band holds the focus (after a
+  // click or ctrl+x tab), so from the box the key is taken here, and consumed.
+  on('prompt.edit', async ($, e, next) => {
+    if (!digitKeys || view.kind !== 'offer') return next(e)
+    const press = digitPress(view.items, e)
+    if (press === undefined) return next(e)
+    if (press.kind === 'hide') show($, { kind: 'hidden' })
+    else void send($, press.item)
+    return { text: e.text, cursor: e.cursor }
+  })
+
+  // Turn over: ask the model, detached, so the turn's completion never waits on it.
   on('prompt.context', async ($, e, next) => {
     const context = await next(e)
     return { ...context, blocks: [...context.blocks, { name: 'nextSteps', text: RECOMMEND_RULE }] }
@@ -186,8 +229,7 @@ export const register: Register = (on, options) => {
         const commands = await $.command.list().catch(() => null)
         const known = commands === null ? null : new Set(commands.map(command => command.name))
         const skills = suggestsSkills && commands !== null ? skillList(commands) : ''
-        const reply = await $.model.fork({ prompt: forkPrompt(skills) })
-        items = reply.isAnswered ? parseSuggestions(reply.text, known) : []
+        items = parseSuggestions(await suggestionText($, e.answer, skills, suggestModel), known)
       } catch (error) {
         $.ui.log(`fork failed: ${String(error)}`, { to: 'debug' })
       }
@@ -222,7 +264,11 @@ export const register: Register = (on, options) => {
         <Text dimColor>→ дальше:</Text>
         {view.items.map((item, index) => (
           <Box marginLeft={2} gap={1}>
-            <Button key={`s${index}`} hotkey={String(index + 1)} plain label={item} onPress={() => void send($, item)} />
+            <Button key={`s${index}`} hotkey={String(index + 1)} plain label={item} onPress={() => {
+                // A press already taken from the box has hidden them: no second send.
+                if (view.kind === 'offer') void send($, item)
+              }}
+            />
             {/* The first is the one the model recommends: the mark is shown, not sent. */}
             {index === 0 && <Text color="success">(Рекомендую)</Text>}
           </Box>

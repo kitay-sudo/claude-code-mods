@@ -1,7 +1,7 @@
 {
   "name": "quick-steps",
-  "version": "0.5.1",
-  "description": "После каждого ответа — до трёх следующих запросов над полем ввода: нажал цифру или кликнул, и запрос сразу уходит. Форк next-steps.",
+  "version": "0.6.0",
+  "description": "После каждого ответа — до трёх следующих запросов над полем ввода: нажал цифру на клавиатуре (в пустом поле ввода) или кликнул, и запрос сразу уходит. Подсказки придумывает недорогая модель по свежей части разговора. Форк next-steps.",
   "license": "MIT",
   "userConfig": {
     "minAnswerChars": {
@@ -15,6 +15,20 @@
       "type": "boolean",
       "title": "Suggest skills and slash commands",
       "description": "Tell the suggester which skills and slash commands this session has, so a suggestion can be one of them.",
+      "required": false,
+      "default": true
+    },
+    "suggestModel": {
+      "type": "string",
+      "title": "Модель для подсказок",
+      "description": "Какая модель придумывает подсказки: псевдоним (haiku, sonnet) или id модели. \"session\" — модель самого чата с полным разговором из кэша: подсказки точнее, токенов уходит заметно больше. Если выбранная модель не ответила, подсказки придумает модель чата.",
+      "required": false,
+      "default": "haiku"
+    },
+    "digitKeys": {
+      "type": "boolean",
+      "title": "Цифры с клавиатуры",
+      "description": "Цифра 1, 2 или 3, набранная в пустом поле ввода, сразу отправляет подсказку, 0 прячет их. Выключите, если нужно начинать сообщение с цифры, пока подсказки на экране.",
       "required": false,
       "default": true
     }
