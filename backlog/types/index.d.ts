@@ -14,11 +14,26 @@ export type ClosedItem = BacklogItem & {
   how: 'done' | 'dropped'
 }
 
-/** The project's backlog: its items, the ones closed lately, and the number the next id takes. */
+/** The project's backlog: its items, the ones closed (a long history), and the number the next id takes. */
 export type Backlog = {
   items: BacklogItem[]
   closed: ClosedItem[]
   next: number
+}
+
+/** The pane's tabs: what is current, what is done, everything. */
+export type Tab = 'open' | 'done' | 'all'
+
+/** One line of a tab: a current item, a done one, or one dropped as not needed. */
+export type Row = {
+  id: string
+  text: string
+  state: 'open' | 'done' | 'dropped'
+  /** When it was added. */
+  at: number
+  /** The date it is shown and ordered by: when added if current, when closed if not. */
+  day: number
+  by: 'person' | 'claude'
 }
 
 declare module 'claude-code' {
@@ -32,6 +47,8 @@ declare module 'claude-code' {
       clearing: boolean
       /** The project's folder name, under the heading. */
       project: string
+      /** Which tab of the pane is open in this chat. */
+      tab: Tab
     }
   }
 }

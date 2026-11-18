@@ -1,23 +1,28 @@
 // backlog: what is left for later in this project, kept between chats, in a
 // pane beside the chat. The model adds to it with its `backlog` tool and marks
 // items done; the person adds a line, sends an item to work in one press, or
-// closes it. Every chat of the project reads the same store and looks at it
-// again every few seconds, so a change shows in all of them.
+// closes it, and asks for a client report on a finished one ("отчёт", answered
+// in the chat, see report.ts). The pane has three tabs: current, done, all,
+// each with its newest items first and a date on every one. Every chat of the
+// project reads the same store and looks at it again every few seconds, so a
+// change shows in all of them.
 
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderElement } from 'claude-code'
 
-import type { Backlog } from '../types'
-import { addItems, ageText, backlogBriefing, checkItem, closeItems, emptyBacklog, isStale, reopenItem, restoreBacklog, takePrompt } from './backlog'
+import type { Backlog, Row, Tab } from '../types'
+import { addItems, backlogBriefing, checkItem, closeItems, emptyBacklog, isStale, reopenItem, restoreBacklog, rowMeta, rowsOf, tabCounts, takePrompt } from './backlog'
+import { reportPrompt } from './report'
 
 const PANE = 'backlog'
 const PANE_TITLE = 'Бэклог'
 const TOOL = 'mcp__backlog__backlog'
 // How often a chat looks whether another chat of the project changed the backlog.
 const SYNC_MS = 4_000
-const CLOSED_SHOWN = 3
-// The items' numbers stand in a column of this width.
-const NUMBER_WIDTH = 4
+// On the "all" tab a done or dropped item carries a mark in a column of this width;
+// on the other tabs every item is alike and none is needed.
+const MARK_WIDTH = 3
+const MARK = { open: ' ', done: '✓', dropped: '✕' } as const
 
 const TOOL_DESCRIPTION =
   "Keeps the project's backlog in the Backlog pane: things to do later, kept between chats. Add items when the user " +
@@ -42,6 +47,7 @@ const backlog = atom({ plugin: 'backlog', key: 'backlog' } as const, emptyBacklo
 const draft = atom({ plugin: 'backlog', key: 'draft' } as const, '')
 const clearing = atom({ plugin: 'backlog', key: 'clearing' } as const, false)
 const project = atom({ plugin: 'backlog', key: 'project' } as const, '')
+const tabState = atom({ plugin: 'backlog', key: 'tab' } as const, 'open' as Tab)
 
 function folderOf(cwd: string): string {
   return cwd.replace(/\\/g, '/').replace(/\/+$/, '')
@@ -112,6 +118,12 @@ async function takeItem($: EngineInterface, id: string): Promise<void> {
   if (item !== undefined) await handOver($, takePrompt(item))
 }
 
+/** A finished task handed to Claude to write up for the client; the report comes back in the chat. */
+async function reportItem($: EngineInterface, id: string): Promise<void> {
+  const item = (await read($, backlog)).closed.find(one => one.id === id && one.how === 'done')
+  if (item !== undefined) await handOver($, reportPrompt(item))
+}
+
 let syncTimer: { cancel: () => void } | null = null
 
 export const register: Register = on => {
@@ -171,8 +183,9 @@ export const register: Register = on => {
     return { result: `Бэклог обновлён${added.length > 0 ? `. Добавлено: ${added.join('; ')}` : ''}.` }
   })
 
-  // The pane with air between its parts: the heading and its buttons, the items
-  // each with its own buttons a row under the text, the recently closed, the field.
+  // The pane with air between its parts: the heading, the tabs (current, done,
+  // all), the items newest first, each with its date and its own buttons a row
+  // under the text, and the field. A narrow pane keeps everything in one column.
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e): Promise<RenderElement> => {
     const elements = $.ui.resolve(e)
     const { Box, Text, Button } = elements
@@ -181,9 +194,13 @@ export const register: Register = on => {
     const later = await read($, backlog)
     const typed = await read($, draft)
     const isClearing = await read($, clearing)
-    const name = await read($, project)
+    const tab = await read($, tabState)
     const now = await $.clock.now()
-    const recentlyClosed = [...later.closed].reverse().slice(0, CLOSED_SHOWN)
+    const rows = rowsOf(later, tab)
+    const counts = tabCounts(later)
+    const staleCount = later.items.filter(item => isStale(item.at, now)).length
+    const showMarks = tab === 'all'
+    const markWidth = showMarks ? MARK_WIDTH : 0
 
     const heading = (key: string, text: string) => (
       <Box key={key} marginBottom={1}>
@@ -191,87 +208,42 @@ export const register: Register = on => {
       </Box>
     )
 
+    const tabButton = (which: Tab, label: string) => (
+      <Button
+        key={`tab-${which}`}
+        label={`${label} ${counts[which]}`}
+        {...(tab === which ? { variant: 'primary' as const } : {})}
+        onPress={() => void update($, tabState, () => which)}
+      />
+    )
+
+    // Each state of an item has its own buttons.
+    const buttonsOf = (row: Row) =>
+      row.state === 'open'
+        ? [
+            <Button key={`take-${row.id}`} label="в работу" onPress={() => void takeItem($, row.id)} />,
+            <Button key={`done-${row.id}`} label="✓ сделано" onPress={() => void closeItem($, row.id, 'done')} />,
+            // Just an icon, red of its own: a button takes only a string, no colour of its own.
+            <Button key={`drop-${row.id}`} label="❌" onPress={() => void closeItem($, row.id, 'dropped')} />,
+          ]
+        : row.state === 'done'
+          ? [
+              // A finished task can be written up for the client in one press.
+              <Button key={`report-${row.id}`} label="отчёт" onPress={() => void reportItem($, row.id)} />,
+              <Button key={`reopen-${row.id}`} label="вернуть" onPress={() => void change($, current => reopenItem(current, row.id))} />,
+            ]
+          : [<Button key={`reopen-${row.id}`} label="вернуть" onPress={() => void change($, current => reopenItem(current, row.id))} />]
+
+    const empty =
+      tab === 'done' ? 'Выполненных пока нет.' : 'Скажи Claude "сделаем потом", и пункт появится здесь. Или добавь сам внизу.'
+
     return (
       <Box flexDirection="column">
-        {heading('h-title', later.items.length === 0 ? 'БЭКЛОГ ПРОЕКТА · пусто' : `БЭКЛОГ ПРОЕКТА · ${later.items.length}`)}
-        <Text>{name}</Text>
+        {heading('h-title', counts.open === 0 ? 'БЭКЛОГ ПРОЕКТА · пусто' : `БЭКЛОГ ПРОЕКТА · ${counts.open}`)}
 
-        {later.items.length === 0 ? (
-          <Box marginTop={1}>
-            <Text dimColor wrap="wrap">
-              Скажи Claude "сделаем потом", и пункт появится здесь. Или добавь сам внизу.
-            </Text>
-          </Box>
-        ) : isClearing ? (
-          <Box flexDirection="column" marginTop={2}>
-            <Text color="warning" wrap="wrap">
-              Убрать все пункты ({later.items.length}) как неактуальные? Их можно будет вернуть из закрытых.
-            </Text>
-            <Box marginTop={1} gap={1}>
-              <Button key="clear-yes" label="Да, очистить" onPress={() => void clearAll($)} />
-              <Button key="clear-no" label="Отмена" onPress={() => void update($, clearing, () => false)} />
-            </Box>
-          </Box>
-        ) : (
-          <Box marginTop={2} gap={1} flexWrap="wrap">
-            <Button key="check" label="Проверить, что актуально" onPress={() => void handOver($, CHECK_PROMPT)} />
-            <Button key="clear" label="Очистить всё" onPress={() => void update($, clearing, () => true)} />
-          </Box>
-        )}
-
-        {later.items.length > 0 && (
-          <Box marginTop={2} flexDirection="column">
-            {later.items.map((item, index) => {
-              const isOld = isStale(item.at, now)
-              return (
-                <Box key={item.id} flexDirection="column" {...(index > 0 ? { marginTop: 2 } : {})}>
-                  <Box>
-                    <Box width={NUMBER_WIDTH} flexShrink={0}>
-                      <Text dimColor>{index + 1}.</Text>
-                    </Box>
-                    <Box flexGrow={1}>
-                      <Text wrap="wrap">{item.text}</Text>
-                    </Box>
-                  </Box>
-                  <Box marginLeft={NUMBER_WIDTH}>
-                    <Text {...(isOld ? { color: 'warning' } : { dimColor: true })}>
-                      {item.by === 'claude' ? 'Claude' : 'ты'} · {ageText(item.at, now)}
-                      {isOld ? ' · давно, ещё нужно?' : ''}
-                    </Text>
-                  </Box>
-                  {/* Real buttons, a row under the text, so they read as buttons. */}
-                  <Box marginLeft={NUMBER_WIDTH} marginTop={1} gap={1} flexWrap="wrap">
-                    <Button key={`take-${item.id}`} label="в работу" onPress={() => void takeItem($, item.id)} />
-                    <Button key={`done-${item.id}`} label="✓ сделано" onPress={() => void closeItem($, item.id, 'done')} />
-                    <Button key={`drop-${item.id}`} label="✕ не актуально" onPress={() => void closeItem($, item.id, 'dropped')} />
-                  </Box>
-                </Box>
-              )
-            })}
-          </Box>
-        )}
-
-        {recentlyClosed.length > 0 && (
-          <Box marginTop={2} flexDirection="column">
-            {heading('h-closed', 'ЗАКРЫТО НЕДАВНО')}
-            {recentlyClosed.map((item, index) => (
-              <Box key={`closed-${item.id}`} {...(index > 0 ? { marginTop: 1 } : {})}>
-                <Box flexGrow={1}>
-                  <Text dimColor wrap="wrap">
-                    {item.how === 'done' ? '✓' : '✕'} {item.text}
-                  </Text>
-                </Box>
-                <Box flexShrink={0} marginLeft={1}>
-                  <Button key={`reopen-${item.id}`} label="вернуть" onPress={() => void change($, current => reopenItem(current, item.id))} />
-                </Box>
-              </Box>
-            ))}
-          </Box>
-        )}
-
-        {/* The field and its button on one row; a hint and a spare row keep it whole at the pane's bottom. */}
-        {Input !== undefined && (
-          <Box marginTop={2} marginBottom={1} flexDirection="column">
+        {/* The field first, where it is always in reach; not on the done tab, where nothing is added. */}
+        {Input !== undefined && tab !== 'done' && (
+          <Box flexDirection="column" marginBottom={2}>
             {heading('h-add', 'ДОБАВИТЬ НА ПОТОМ')}
             <Box gap={1} alignItems="center">
               <Input
@@ -283,9 +255,74 @@ export const register: Register = on => {
               />
               <Button key="add" label="Добавить" onPress={() => void personAdd($, typed)} />
             </Box>
-            <Box marginTop={1}>
-              <Text dimColor>Одна задача одной строкой.</Text>
-            </Box>
+          </Box>
+        )}
+
+        <Box gap={1} flexWrap="wrap">
+          {tabButton('open', 'Текущие')}
+          {tabButton('done', 'Выполненные')}
+          {tabButton('all', 'Все')}
+        </Box>
+
+        {tab === 'open' && counts.open > 0 && (
+          <Box flexDirection="column" marginTop={2}>
+            {staleCount > 0 && !isClearing && (
+              <Box marginBottom={1}>
+                <Text color="warning" wrap="wrap">
+                  Давно висят: {staleCount}. Возможно, уже сделаны.
+                </Text>
+              </Box>
+            )}
+            {isClearing ? (
+              <Box flexDirection="column">
+                <Text color="warning" wrap="wrap">
+                  Убрать все пункты ({counts.open}) как неактуальные? Их можно будет вернуть из закрытых.
+                </Text>
+                <Box marginTop={1} gap={1}>
+                  <Button key="clear-yes" label="Да, очистить" onPress={() => void clearAll($)} />
+                  <Button key="clear-no" label="Отмена" onPress={() => void update($, clearing, () => false)} />
+                </Box>
+              </Box>
+            ) : (
+              <Box gap={1} flexWrap="wrap">
+                <Button key="check" label="Проверить, что актуально" onPress={() => void handOver($, CHECK_PROMPT)} />
+                <Button key="clear" label="Очистить всё" onPress={() => void update($, clearing, () => true)} />
+              </Box>
+            )}
+          </Box>
+        )}
+
+        {rows.length === 0 ? (
+          <Box marginTop={2}>
+            <Text dimColor wrap="wrap">
+              {empty}
+            </Text>
+          </Box>
+        ) : (
+          <Box marginTop={2} flexDirection="column">
+            {rows.map((row, index) => (
+              <Box key={`${row.state}-${row.id}`} flexDirection="column" {...(index > 0 ? { marginTop: 2 } : {})}>
+                <Box>
+                  {showMarks && (
+                    <Box width={MARK_WIDTH} flexShrink={0}>
+                      <Text dimColor>{MARK[row.state]}</Text>
+                    </Box>
+                  )}
+                  <Box flexGrow={1}>
+                    <Text wrap="wrap" {...(row.state === 'open' ? {} : { dimColor: true })}>
+                      {row.text}
+                    </Text>
+                  </Box>
+                </Box>
+                <Box marginLeft={markWidth}>
+                  <Text {...(row.state === 'open' && isStale(row.at, now) ? { color: 'warning' } : { dimColor: true })}>{rowMeta(row, now)}</Text>
+                </Box>
+                {/* Real buttons, one row under the text, so they read as buttons. */}
+                <Box marginLeft={markWidth} marginTop={1} gap={1} flexWrap="wrap">
+                  {buttonsOf(row)}
+                </Box>
+              </Box>
+            ))}
           </Box>
         )}
       </Box>

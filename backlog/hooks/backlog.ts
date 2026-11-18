@@ -1,13 +1,14 @@
 // The backlog as plain data: no `$`, so tests read it directly.
 
-import type { Backlog, BacklogItem, ClosedItem } from '../types'
+import type { Backlog, BacklogItem, ClosedItem, Row, Tab } from '../types'
 
 const ITEM_MAX = 300
 const ITEMS_KEPT = 50
-const CLOSED_KEPT = 10
+// The "done" and "all" tabs are a history, so it is kept long.
+const CLOSED_KEPT = 300
 const DAY_MS = 24 * 60 * 60 * 1000
 /** An item older than this is asked whether it is still needed. */
-export const STALE_DAYS = 14
+export const STALE_DAYS = 7
 
 export function emptyBacklog(): Backlog {
   return { items: [], closed: [], next: 1 }
@@ -65,6 +66,47 @@ export function isStale(at: number, now: number): boolean {
   return now - at >= STALE_DAYS * DAY_MS
 }
 
+/** A date as people write it on a list: "19.11", with the year only when it is not this one. */
+export function dateLabel(ms: number, now: number): string {
+  if (!(ms > 0)) return ''
+  const at = new Date(ms)
+  const day = String(at.getDate()).padStart(2, '0')
+  const month = String(at.getMonth() + 1).padStart(2, '0')
+  return at.getFullYear() === new Date(now).getFullYear() ? `${day}.${month}` : `${day}.${month}.${at.getFullYear()}`
+}
+
+/** The lines of a tab, the freshest first: by the date shown, then the newer id. */
+export function rowsOf(backlog: Backlog, tab: Tab): Row[] {
+  const open: Row[] = backlog.items.map(item => ({ id: item.id, text: item.text, state: 'open', at: item.at, day: item.at, by: item.by }))
+  const closed: Row[] = backlog.closed.map(item => ({
+    id: item.id,
+    text: item.text,
+    state: item.how === 'done' ? 'done' : 'dropped',
+    at: item.at,
+    day: item.closedAt > 0 ? item.closedAt : item.at,
+    by: item.by,
+  }))
+  const rows = tab === 'open' ? open : tab === 'done' ? closed.filter(row => row.state === 'done') : [...open, ...closed]
+  return rows.sort((a, b) => b.day - a.day || Number(b.id.slice(1)) - Number(a.id.slice(1)))
+}
+
+/** How many lines each tab holds. */
+export function tabCounts(backlog: Backlog): Record<Tab, number> {
+  const done = backlog.closed.filter(item => item.how === 'done').length
+  return { open: backlog.items.length, done, all: backlog.items.length + backlog.closed.length }
+}
+
+/** The small line under an item: its date and who added it, or when it was closed. */
+export function rowMeta(row: Row, now: number): string {
+  if (row.state === 'open') {
+    return `${dateLabel(row.day, now)} · ${row.by === 'claude' ? 'Claude' : 'ты'}${isStale(row.at, now) ? ' · давно, ещё нужно?' : ''}`
+  }
+  const word = row.state === 'done' ? 'сделано' : 'не актуально'
+  const closed = dateLabel(row.day, now)
+  const added = dateLabel(row.at, now)
+  return added !== '' && added !== closed ? `${word} ${closed} · добавлено ${added}` : `${word} ${closed}`
+}
+
 function startOfDay(ms: number): number {
   const at = new Date(ms)
   return new Date(at.getFullYear(), at.getMonth(), at.getDate()).getTime()
@@ -102,7 +144,8 @@ export function restoreBacklog(raw: unknown): Backlog {
 export function backlogBriefing(backlog: Backlog, tool: string): string {
   const how =
     `When the user says to do something later or next time, or work is left over when a task ends, add it with ${tool}; ` +
-    'mark items done by id once they are finished, and drop the ones no longer needed. When the user asks what is left, start from this list.'
+    'mark items done by id once they are finished, and drop the ones no longer needed. Before you finish a piece of work, check whether it completes ' +
+    'an item on the list and mark that item done in the same turn: finished work must not stay on the list. When the user asks what is left, start from this list.'
   if (backlog.items.length === 0) return `The project's backlog (the Backlog pane) is empty. ${how}`
   const lines = backlog.items.map(item => `- [${item.id}] ${item.text}`)
   return `The project's backlog (the Backlog pane: things to do later, kept between chats):\n${lines.join('\n')}\n${how}`
