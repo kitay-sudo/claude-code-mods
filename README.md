@@ -20,19 +20,31 @@
 Скопируйте этот текст и вставьте в чат с Claude Code. Остальное он сделает сам.
 
 ```text
-Поставь мне моды для Claude Code из репозитория https://github.com/kitay-sudo/claude-code-mods и настрой их. Делай сам, по шагам, и после каждого шага коротко говори, что сделано.
+Поставь мне моды для Claude Code из репозитория
+https://github.com/kitay-sudo/claude-code-mods и настрой их.
+Делай сам, по шагам, и после каждого шага коротко говори, что сделано.
 
-1. Проверь, что установлен Git: git --version. Если нет, спроси у меня разрешения и поставь: winget install --id Git.Git -e
+1. Проверь, что установлен Git (git --version). Если нет, спроси у меня разрешения и поставь:
+   winget install --id Git.Git -e
 
-2. Скачай репозиторий в папку .claude\mods внутри моей домашней папки: git clone https://github.com/kitay-sudo/claude-code-mods "$env:USERPROFILE\.claude\mods". Если такая папка уже есть и в ней что-то другое, ничего не трогай и спроси меня.
+2. Скачай репозиторий в папку .claude\mods внутри моей домашней папки:
+   git clone https://github.com/kitay-sudo/claude-code-mods "$env:USERPROFILE\.claude\mods"
+   Если такая папка уже есть и в ней что-то другое, ничего не трогай и спроси меня.
 
-3. Скажи мне одной фразой, что следующий скрипт допишет папки модов в файл settings.json (копию прежних настроек он сохранит), и запусти его: powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\.claude\mods\install.ps1"
+3. Скажи мне одной фразой, что следующий скрипт допишет папки модов в файл settings.json
+   (копию прежних настроек он сохранит), и запусти его:
+   powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\.claude\mods\install.ps1"
 
-4. Если я работаю в терминале, а не в приложении, предложи включить ранний доступ к модам и, если я соглашусь, выполни: [Environment]::SetEnvironmentVariable('CLAUDE_CODE_ENABLE_FUNCTION_HOOKS', '1', 'User')
+4. Если я работаю в терминале, а не в приложении, предложи включить ранний доступ к модам.
+   Если я соглашусь, выполни:
+   [Environment]::SetEnvironmentVariable('CLAUDE_CODE_ENABLE_FUNCTION_HOOKS', '1', 'User')
 
-5. Спроси, сколько стоит мой час работы в рублях (по умолчанию 1200) и какой курс доллара (по умолчанию 87). Если я назову другие числа, поменяй default у humanRubPerHour и rubPerUsd в файле spend-meter/.claude-plugin/plugin.json внутри папки модов.
+5. Спроси, сколько стоит мой час работы в рублях (по умолчанию 1200) и какой курс доллара
+   (по умолчанию 87). Если я назову другие числа, поменяй default у humanRubPerHour
+   и rubPerUsd в файле spend-meter/.claude-plugin/plugin.json внутри папки модов.
 
-6. Скажи, что мне нужно открыть новый чат, и что я там увижу: плашки кэша, расхода и TDD над полем ввода, панель бэклога сбоку, команды /spend и /tdd.
+6. Скажи, что мне нужно открыть новый чат, и что я там увижу: плашки кэша, расхода и TDD
+   над полем ввода, панель бэклога сбоку, команды /spend и /tdd.
 
 Больше ничего не меняй и не удаляй. В мои проекты ничего не записывай без моего разрешения.
 ```
