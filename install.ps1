@@ -11,6 +11,8 @@
 #   2. Выключает копии модов из маркетплейса local-mods, если они стояли, чтобы не было двойников.
 #   3. Переносит данные модов (расход, серверы, бэклог, паспорта) под имена файлов
 #      новой схемы; старые файлы остаются.
+#   4. Переносит данные переименованных модов: бэклог пульта задачи в backlog,
+#      паспорта проектов в project-memory. Старые файлы тоже остаются.
 
 $ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot
@@ -65,6 +67,11 @@ if (Test-Path $store) {
             Write-Host "Данные перенесены: $($old.Name)" -ForegroundColor DarkGray
         }
     }
+}
+
+# 4. Данные переименованных модов: task-panel в backlog, project-passport в project-memory.
+if (Test-Path $store) {
+    node (Join-Path $root 'scripts\migrate-store.js') $store
 }
 
 Write-Host ''

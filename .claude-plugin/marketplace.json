@@ -3,12 +3,8 @@
   "owner": { "name": "local" },
   "plugins": [
     { "name": "cache-timer", "source": "./cache-timer" },
-    { "name": "delete-guard", "source": "./delete-guard" },
-    { "name": "task-panel", "source": "./task-panel" },
+    { "name": "backlog", "source": "./backlog" },
     { "name": "quick-steps", "source": "./quick-steps" },
-    { "name": "server-panel", "source": "./server-panel" },
-    { "name": "project-passport", "source": "./project-passport" },
-    { "name": "spend-meter", "source": "./spend-meter" },
-    { "name": "client-report", "source": "./client-report" }
+    { "name": "spend-meter", "source": "./spend-meter" }
   ]
 }

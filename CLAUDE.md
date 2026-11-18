@@ -14,7 +14,7 @@
 
 ## Общий блок над полем ввода
 
-cache-timer, server-panel, spend-meter и quick-steps рисуют один блок. В каждом лежит одинаковый `hooks/status-row.ts`: строки `status` (кэш слева, расход справа), `server`, `next`. Порядок задают ключи `seg-1-cache`, `seg-2-server`, `seg-3-spend`, `seg-4-steps`. Меняешь `status-row.ts`, меняй во всех четырёх одинаково.
+cache-timer, spend-meter и quick-steps рисуют один блок. В каждом лежит одинаковый `hooks/status-row.ts`: строки `status` (кэш слева, расход справа), `server` (сейчас никем не занята: мод server-panel убран), `next`. Порядок задают ключи `seg-1-cache`, `seg-2-server`, `seg-3-spend`, `seg-4-steps`. Меняешь `status-row.ts`, меняй во всех трёх одинаково.
 
 ## Правила
 
