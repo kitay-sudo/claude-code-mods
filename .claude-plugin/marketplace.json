@@ -5,6 +5,7 @@
     { "name": "cache-timer", "source": "./cache-timer" },
     { "name": "backlog", "source": "./backlog" },
     { "name": "quick-steps", "source": "./quick-steps" },
-    { "name": "spend-meter", "source": "./spend-meter" }
+    { "name": "spend-meter", "source": "./spend-meter" },
+    { "name": "tdd", "source": "./tdd" }
   ]
 }
