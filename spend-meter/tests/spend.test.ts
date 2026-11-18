@@ -56,8 +56,9 @@ test('a chat counts whole, the part before the meter was installed too, at 87 �
   for (const surface of ['terminal', 'desktop'] as const) {
     const band = await $.ui.mount({ plugin: 'spend-meter', surface, component: 'AbovePrompt', props: BAND })
     const texts = (await band.findAll({ type: 'Text' })).map(found => found.text)
-    expect(texts).toContain(`сессия 3${NBSP}480${NBSP}₽`)
-    expect(texts).toContain(`· проект 3${NBSP}480${NBSP}₽ · сегодня 3${NBSP}480${NBSP}₽`)
+    expect(texts).toContain(`проект 3${NBSP}480${NBSP}₽`)
+    // Only the whole project is on the line: no session, no today.
+    expect(texts.some(text => /сессия|сегодня/.test(String(text)))).toBe(false)
     expect(await band.findAll({ type: 'Button' })).toEqual([])
     await band.unmount()
   }
@@ -65,7 +66,7 @@ test('a chat counts whole, the part before the meter was installed too, at 87 �
   sim.usd = 42
   await turn($)
   const band = await $.ui.mount({ plugin: 'spend-meter', surface: 'terminal', component: 'AbovePrompt', props: BAND })
-  expect(await band.find({ type: 'Text', text: `· проект 3${NBSP}654${NBSP}₽ · сегодня 3${NBSP}654${NBSP}₽` })).toBeDefined()
+  expect(await band.find({ type: 'Text', text: `проект 3${NBSP}654${NBSP}₽` })).toBeDefined()
 })
 
 test('a resumed chat adds only what is new, a /clear starts afresh, and nothing counts twice', async ($, on) => {
@@ -143,7 +144,7 @@ test('the spend sits at the right of the first line, the server below, the sugge
   }
   const { clock, sim } = world(on, {}, shared)
   sim.limits = [{ kind: 'five_hour', percentUsed: 13 }]
-  await $.session.start({ cwd: 'C:\work\acme-sync', surface: 'desktop', isInteractive: true })
+  await $.session.start({ cwd: 'C:\\work\\acme-sync', surface: 'desktop', isInteractive: true })
   await clock.settle()
   const band = await $.ui.mount({ plugin: 'spend-meter', surface: 'desktop', component: 'AbovePrompt', props: BAND })
   type Node = { props: { key?: string; justifyContent?: string; marginTop?: number }; children?: Node[] }
@@ -179,7 +180,8 @@ test('time on the project: Claude at work and short pauses count, a break does n
   await say('Ещё поправь отступы')
 
   const band = await $.ui.mount({ plugin: 'spend-meter', surface: 'desktop', component: 'AbovePrompt', props: BAND })
-  expect(await band.find({ type: 'Text', text: / · 🕐 35 мин$/ })).toBeDefined()
+  // 35 minutes of the person's time at 1 200 ₽ an hour, the hours last.
+  expect(await band.find({ type: 'Text', text: `· ваш труд 700${NBSP}₽ · 🕐 35 мин` })).toBeDefined()
   const pane = await $.ui.mount({ plugin: 'spend-meter', surface: 'desktop', component: 'Pane', requestId: 'spend-meter', props: PANE })
   expect(await pane.find({ type: 'Text', text: '🕐 сегодня 35 мин · 7 дней 35 мин' })).toBeDefined()
   expect(await pane.find({ type: 'Text', text: /· 🕐 35 мин$/ })).toBeDefined()
@@ -187,4 +189,54 @@ test('time on the project: Claude at work and short pauses count, a break does n
   expect(context).toContain('today 35 мин, last 7 days 35 мин')
   // Nothing on the pane is bold.
   expect((await pane.findAll({ type: 'Text' })).filter(found => found.props.bold === true)).toEqual([])
+})
+
+test('the band shows the whole project: its cost, the person\'s hours at 1 200 ₽, and the hours, over days', async ($, on) => {
+  const MINUTE = 60_000
+  const { clock } = world(on)
+  on('prompt.submit', ($, e) => ({ text: e.text }))
+  on('turn.start', ($, e) => ({ turnId: e.turnId }))
+  on('prompt.context', ($, e) => ({ blocks: e.blocks }))
+  await $.session.start({ cwd: 'C:\\work\\acme-sync', surface: 'desktop', isInteractive: true })
+  await clock.settle()
+  const say = (text: string) => $.prompt.submit({ text, wait: false, origin: { kind: 'composer' } })
+
+  // Day one: 35 minutes of work.
+  await say('Сделай форму заявки')
+  await $.turn.start({ text: 'Сделай форму заявки', turnId: 't1' })
+  await clock.advance(20 * MINUTE)
+  await turn($)
+  await clock.advance(5 * MINUTE)
+  await say('Теперь кнопку звонка')
+  await $.turn.start({ text: 'Теперь кнопку звонка', turnId: 't2' })
+  await clock.advance(10 * MINUTE)
+  await turn($)
+
+  // The next day: ten more. The break between the days is not work.
+  await clock.advance(24 * 60 * MINUTE)
+  await say('Ещё поправь отступы')
+  await $.turn.start({ text: 'Ещё поправь отступы', turnId: 't3' })
+  await clock.advance(10 * MINUTE)
+  await turn($)
+
+  const band = await $.ui.mount({ plugin: 'spend-meter', surface: 'desktop', component: 'AbovePrompt', props: BAND })
+  // 35 + 10 minutes over two days: 45 minutes, 900 ₽. Today's ten are not shown apart.
+  expect(await band.find({ type: 'Text', text: `· ваш труд 900${NBSP}₽ · 🕐 45 мин` })).toBeDefined()
+  expect(await band.find({ type: 'Text', text: /сегодня|сессия/ })).toBeUndefined()
+})
+
+test('the hour of the person\'s work comes from the option', { options: { humanRubPerHour: 2000 } }, async ($, on) => {
+  const MINUTE = 60_000
+  const { clock } = world(on)
+  on('prompt.submit', ($, e) => ({ text: e.text }))
+  on('turn.start', ($, e) => ({ turnId: e.turnId }))
+  await $.session.start({ cwd: 'C:\\work\\acme-sync', surface: 'desktop', isInteractive: true })
+  await clock.settle()
+  await $.prompt.submit({ text: 'Сделай форму заявки', wait: false, origin: { kind: 'composer' } })
+  await $.turn.start({ text: 'Сделай форму заявки', turnId: 't1' })
+  await clock.advance(10 * MINUTE)
+  await turn($)
+  const band = await $.ui.mount({ plugin: 'spend-meter', surface: 'desktop', component: 'AbovePrompt', props: BAND })
+  // 10 minutes at 2 000 ₽ an hour.
+  expect(await band.find({ type: 'Text', text: `· ваш труд 333${NBSP}₽ · 🕐 10 мин` })).toBeDefined()
 })

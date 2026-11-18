@@ -33,6 +33,13 @@ export function money(usd: number, rub: number): string {
   return formatRub(usd * rub)
 }
 
+const HOUR_MS = 3_600_000
+
+/** What the person's own time would cost at `perHour` rubles an hour, as rubles read. */
+export function humanCost(ms: number, perHour: number): string {
+  return formatRub((Math.max(0, ms) / HOUR_MS) * perHour)
+}
+
 export function emptySpend(today: string): ProjectSpend {
   return { usd: 0, days: {}, since: today, budgetRub: null, counted: {}, time: {}, lastActive: 0 }
 }

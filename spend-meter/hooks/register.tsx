@@ -1,7 +1,10 @@
 // spend-meter: what developing this project costs, in rubles, always in view.
 //
-// At the right of the first line of the shared block above the prompt: this
-// session, the project's total and today's spend. The /spend pane breaks it down by day,
+// At the right of the first line of the shared block above the prompt: the
+// project's total cost at API prices (an estimate: what the same tokens would
+// cost without a subscription), what the person's own hours on it would cost
+// (`humanRubPerHour`, 1200 when not set), and those hours. The /spend pane
+// breaks it down by session, today and by day,
 // shows how full the subscription's windows are (5 hours, week) with their
 // reset times, warned about at 80 % and 95 %, and a budget for the project,
 // warned about at 80 % and 100 %. Rubles at a fixed rate, the
@@ -27,7 +30,9 @@ import {
   dayKey,
   emptySpend,
   formatDuration,
+  formatRub,
   formatUsd,
+  humanCost,
   lastDays,
   limitLabel,
   limitsFrom,
@@ -45,6 +50,8 @@ import { joinRow } from './status-row'
 const PANE = 'spend-meter'
 const PANE_TITLE = 'Расход'
 const DEFAULT_RUB_PER_USD = 87
+// What an hour of the person's own work is worth, in rubles: the `humanRubPerHour` option.
+const DEFAULT_HUMAN_RUB_PER_HOUR = 1200
 const TICK_MS = 30_000
 const LIMIT_MARKS = [80, 95]
 const BUDGET_MARKS = [80, 100]
@@ -187,6 +194,8 @@ async function setBudget($: EngineInterface, isClearing: boolean): Promise<void>
 export const register: Register = (on, options) => {
   const rate = Number(options.rubPerUsd)
   const rub = rate > 0 ? rate : DEFAULT_RUB_PER_USD
+  const human = Number(options.humanRubPerHour)
+  const humanPerHour = human > 0 ? human : DEFAULT_HUMAN_RUB_PER_HOUR
 
   on('session.start', async ($, e, next) => {
     await load($)
@@ -239,19 +248,18 @@ export const register: Register = (on, options) => {
     if (e.props.hasSurvey || e.props.view.agentId !== undefined) return below
     const { Box, Text } = $.ui.resolve(e)
     const shown = await read($, view)
-    const todayUsd = shown.project.days[shown.today] ?? 0
-    const todayTime = shown.project.time[shown.today] ?? 0
+    const projectTime = totalTime(shown.project)
     const budget = shown.project.budgetRub
     const budgetPercent = budget !== null ? Math.round(((shown.project.usd * rub) / budget) * 100) : null
+    // The whole project only: what it cost at API prices, what the person's own
+    // hours would cost, and the hours themselves, the time last.
+    const hasTime = projectTime >= 60_000
 
     const spend = (
       <Box key="seg-3-spend" gap={1}>
         <Text color="claude">₽</Text>
-        {shown.sessionUsd === null ? <Text dimColor>расход недоступен</Text> : <Text>сессия {money(shown.sessionUsd, rub)}</Text>}
-        <Text dimColor>
-          · проект {money(shown.project.usd, rub)} · сегодня {money(todayUsd, rub)}
-          {todayTime >= 60_000 ? ` · ${CLOCK} ${formatDuration(todayTime)}` : ''}
-        </Text>
+        <Text>{`проект ${money(shown.project.usd, rub)}`}</Text>
+        {hasTime && <Text dimColor>{`· ваш труд ${humanCost(projectTime, humanPerHour)} · ${CLOCK} ${formatDuration(projectTime)}`}</Text>}
         {budgetPercent !== null && <Text {...limitLook(budgetPercent)}>· бюджет {budgetPercent}%</Text>}
       </Box>
     )
@@ -315,6 +323,7 @@ export const register: Register = (on, options) => {
           <Text dimColor>
             всего с {shortDay(shown.project.since)}: {formatDuration(allTime)}
           </Text>
+          <Text dimColor>{`ваш труд: ${humanCost(allTime, humanPerHour)} (по ${formatRub(humanPerHour)} в час)`}</Text>
         </Box>
 
         <Box marginTop={2} flexDirection="column">
