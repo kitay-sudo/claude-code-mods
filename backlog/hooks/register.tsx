@@ -2,7 +2,7 @@
 // pane beside the chat. The model adds to it with its `backlog` tool and marks
 // items done; the person adds a line, sends an item to work in one press, or
 // closes it, and asks for a client report on a finished one ("отчёт", answered
-// in the chat, see report.ts). The pane has three tabs: current, done, all,
+// in the chat, see report.ts). The pane has two tabs: current and done,
 // each with its newest items first and a date on every one. Every chat of the
 // project reads the same store and looks at it again every few seconds, so a
 // change shows in all of them.
@@ -11,7 +11,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderElement } from 'claude-code'
 
 import type { Backlog, Row, Tab } from '../types'
-import { addItems, backlogBriefing, checkItem, closeItems, emptyBacklog, isStale, reopenItem, restoreBacklog, rowMeta, rowsOf, tabCounts, takePrompt } from './backlog'
+import { addItems, backlogBriefing, checkItem, closeItems, emptyBacklog, isStale, restoreBacklog, rowMeta, rowsOf, tabCounts, takePrompt } from './backlog'
 import { reportPrompt } from './report'
 
 const PANE = 'backlog'
@@ -19,10 +19,6 @@ const PANE_TITLE = 'Бэклог'
 const TOOL = 'mcp__backlog__backlog'
 // How often a chat looks whether another chat of the project changed the backlog.
 const SYNC_MS = 4_000
-// On the "all" tab a done or dropped item carries a mark in a column of this width;
-// on the other tabs every item is alike and none is needed.
-const MARK_WIDTH = 3
-const MARK = { open: ' ', done: '✓', dropped: '✕' } as const
 
 const TOOL_DESCRIPTION =
   "Keeps the project's backlog in the Backlog pane: things to do later, kept between chats. Add items when the user " +
@@ -199,8 +195,6 @@ export const register: Register = on => {
     const rows = rowsOf(later, tab)
     const counts = tabCounts(later)
     const staleCount = later.items.filter(item => isStale(item.at, now)).length
-    const showMarks = tab === 'all'
-    const markWidth = showMarks ? MARK_WIDTH : 0
 
     const heading = (key: string, text: string) => (
       <Box key={key} marginBottom={1}>
@@ -226,13 +220,10 @@ export const register: Register = on => {
             // Just a small cross, grey (dim) until the pointer is on it: a button takes only a string and no colour of its own.
             <Button key={`drop-${row.id}`} dimColor label="✕" onPress={() => void closeItem($, row.id, 'dropped')} />,
           ]
-        : row.state === 'done'
-          ? [
-              // A finished task can be written up for the client in one press.
-              <Button key={`report-${row.id}`} label="отчёт" onPress={() => void reportItem($, row.id)} />,
-              <Button key={`reopen-${row.id}`} label="вернуть" onPress={() => void change($, current => reopenItem(current, row.id))} />,
-            ]
-          : [<Button key={`reopen-${row.id}`} label="вернуть" onPress={() => void change($, current => reopenItem(current, row.id))} />]
+        : [
+            // A finished task can be written up for the client in one press: an icon, no words.
+            <Button key={`report-${row.id}`} label="📝" onPress={() => void reportItem($, row.id)} />,
+          ]
 
     const empty =
       tab === 'done' ? 'Выполненных пока нет.' : 'Скажи Claude "сделаем потом", и пункт появится здесь. Или добавь сам внизу.'
@@ -261,7 +252,6 @@ export const register: Register = on => {
         <Box gap={1} flexWrap="wrap">
           {tabButton('open', 'Текущие')}
           {tabButton('done', 'Выполненные')}
-          {tabButton('all', 'Все')}
         </Box>
 
         {tab === 'open' && counts.open > 0 && (
@@ -303,22 +293,17 @@ export const register: Register = on => {
             {rows.map((row, index) => (
               <Box key={`${row.state}-${row.id}`} flexDirection="column" {...(index > 0 ? { marginTop: 2 } : {})}>
                 <Box>
-                  {showMarks && (
-                    <Box width={MARK_WIDTH} flexShrink={0}>
-                      <Text dimColor>{MARK[row.state]}</Text>
-                    </Box>
-                  )}
                   <Box flexGrow={1}>
                     <Text wrap="wrap" {...(row.state === 'open' ? {} : { dimColor: true })}>
                       {row.text}
                     </Text>
                   </Box>
                 </Box>
-                <Box marginLeft={markWidth}>
+                <Box>
                   <Text {...(row.state === 'open' && isStale(row.at, now) ? { color: 'warning' } : { dimColor: true })}>{rowMeta(row, now)}</Text>
                 </Box>
                 {/* Real buttons, one row under the text, so they read as buttons. */}
-                <Box marginLeft={markWidth} marginTop={1} gap={1} flexWrap="wrap">
+                <Box marginTop={1} gap={1} flexWrap="wrap">
                   {buttonsOf(row)}
                 </Box>
               </Box>

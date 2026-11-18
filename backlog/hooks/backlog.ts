@@ -75,36 +75,33 @@ export function dateLabel(ms: number, now: number): string {
   return at.getFullYear() === new Date(now).getFullYear() ? `${day}.${month}` : `${day}.${month}.${at.getFullYear()}`
 }
 
-/** The lines of a tab, the freshest first: by the date shown, then the newer id. */
+/**
+ * The lines of a tab, the freshest first: by the date shown, then the newer id.
+ * Items dropped as not needed are on neither tab: they are kept, but not shown.
+ */
 export function rowsOf(backlog: Backlog, tab: Tab): Row[] {
-  const open: Row[] = backlog.items.map(item => ({ id: item.id, text: item.text, state: 'open', at: item.at, day: item.at, by: item.by }))
-  const closed: Row[] = backlog.closed.map(item => ({
-    id: item.id,
-    text: item.text,
-    state: item.how === 'done' ? 'done' : 'dropped',
-    at: item.at,
-    day: item.closedAt > 0 ? item.closedAt : item.at,
-    by: item.by,
-  }))
-  const rows = tab === 'open' ? open : tab === 'done' ? closed.filter(row => row.state === 'done') : [...open, ...closed]
+  const rows: Row[] =
+    tab === 'open'
+      ? backlog.items.map(item => ({ id: item.id, text: item.text, state: 'open', at: item.at, day: item.at, by: item.by }))
+      : backlog.closed
+          .filter(item => item.how === 'done')
+          .map(item => ({ id: item.id, text: item.text, state: 'done', at: item.at, day: item.closedAt > 0 ? item.closedAt : item.at, by: item.by }))
   return rows.sort((a, b) => b.day - a.day || Number(b.id.slice(1)) - Number(a.id.slice(1)))
 }
 
 /** How many lines each tab holds. */
 export function tabCounts(backlog: Backlog): Record<Tab, number> {
-  const done = backlog.closed.filter(item => item.how === 'done').length
-  return { open: backlog.items.length, done, all: backlog.items.length + backlog.closed.length }
+  return { open: backlog.items.length, done: backlog.closed.filter(item => item.how === 'done').length }
 }
 
-/** The small line under an item: its date and who added it, or when it was closed. */
+/** The small line under an item: its date and who added it, or when it was done. */
 export function rowMeta(row: Row, now: number): string {
   if (row.state === 'open') {
     return `${dateLabel(row.day, now)} · ${row.by === 'claude' ? 'Claude' : 'ты'}${isStale(row.at, now) ? ' · давно, ещё нужно?' : ''}`
   }
-  const word = row.state === 'done' ? 'сделано' : 'не актуально'
-  const closed = dateLabel(row.day, now)
+  const done = dateLabel(row.day, now)
   const added = dateLabel(row.at, now)
-  return added !== '' && added !== closed ? `${word} ${closed} · добавлено ${added}` : `${word} ${closed}`
+  return added !== '' && added !== done ? `сделано ${done} · добавлено ${added}` : `сделано ${done}`
 }
 
 function startOfDay(ms: number): number {

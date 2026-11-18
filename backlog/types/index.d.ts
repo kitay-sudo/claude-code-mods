@@ -21,14 +21,14 @@ export type Backlog = {
   next: number
 }
 
-/** The pane's tabs: what is current, what is done, everything. */
-export type Tab = 'open' | 'done' | 'all'
+/** The pane's tabs: what is current, what is done. */
+export type Tab = 'open' | 'done'
 
-/** One line of a tab: a current item, a done one, or one dropped as not needed. */
+/** One line of a tab: a current item or a done one. */
 export type Row = {
   id: string
   text: string
-  state: 'open' | 'done' | 'dropped'
+  state: 'open' | 'done'
   /** When it was added. */
   at: number
   /** The date it is shown and ordered by: when added if current, when closed if not. */

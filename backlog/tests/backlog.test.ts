@@ -108,10 +108,11 @@ test('Claude adds and closes through its tool; the person adds, sends to work an
 
   await pane.press({ key: 'drop-b1' })
   expect(await pane.find({ type: 'Text', text: 'БЭКЛОГ ПРОЕКТА · пусто' })).toBeDefined()
-  // A dropped one is only in "Все", with its way back.
-  await pane.press({ key: 'tab-all' })
-  await pane.press({ key: 'reopen-b1' })
+  // A dropped item is shown on neither tab.
+  await pane.press({ key: 'tab-done' })
+  expect(await pane.find({ type: 'Text', text: 'Подключить оплату' })).toBeUndefined()
   await pane.press({ key: 'tab-open' })
+  await pane.input({ key: 'add-text', text: 'Подключить оплату', kind: 'submit' })
   expect(await pane.find({ type: 'Text', text: 'Подключить оплату' })).toBeDefined()
 
   // "Очистить всё" asks once more.
@@ -134,7 +135,7 @@ test('an item another chat of the project added shows here within seconds, and s
   expect((disk.get(KEY) as Backlog).items.map(item => item.text)).toEqual(['Обновить зависимости', 'Проверить мобильную версию'])
 })
 
-test('a finished task has an "отчёт" button that hands Claude the report request; a dropped one has none', async ($, on) => {
+test('a finished task has an "отчёт" icon that hands Claude the report request; nothing else, and no way back', async ($, on) => {
   const { submitted } = world(on)
   await start($)
   await $.tool.call({ tool: TOOL, add: ['Поправить письма клиентам', 'Старый эксперимент'] })
@@ -143,17 +144,21 @@ test('a finished task has an "отчёт" button that hands Claude the report re
 
   const pane = await $.ui.mount(OPEN)
   await pane.press({ key: 'tab-done' })
-  expect(await pane.find({ type: 'Button', key: 'reopen-b2' })).toBeUndefined()
+  // The done task has the icon and nothing else: no "вернуть", no words on the button.
+  const keys = (await pane.findAll({ type: 'Button' })).map(button => String(button.key))
+  expect(keys.filter(key => key.endsWith('-b1'))).toEqual(['report-b1'])
+  expect(keys.some(key => key.startsWith('reopen-') || key.endsWith('-b2'))).toBe(false)
+  expect((await pane.find({ type: 'Button', key: 'report-b1' }))?.text).toBe('📝')
   await pane.press({ key: 'report-b1' })
   expect(submitted).toHaveLength(1)
   expect(submitted[0]).toContain('[b1]: Поправить письма клиентам')
   expect(submitted[0]).toContain('🪴')
   // The task stays done: a report is only asked for.
   expect(await pane.find({ type: 'Text', text: 'Поправить письма клиентам' })).toBeDefined()
-  // The dropped one is in "Все" with its way back, and no report.
-  await pane.press({ key: 'tab-all' })
-  expect(await pane.find({ type: 'Button', key: 'report-b2' })).toBeUndefined()
-  expect(await pane.find({ type: 'Button', key: 'reopen-b2' })).toBeDefined()
+  // The one dropped as not needed is on neither tab.
+  expect(await pane.find({ type: 'Text', text: 'Старый эксперимент' })).toBeUndefined()
+  await pane.press({ key: 'tab-open' })
+  expect(await pane.find({ type: 'Text', text: 'Старый эксперимент' })).toBeUndefined()
 })
 
 // Two current items (one a week old), a done one and a dropped one.
@@ -173,11 +178,10 @@ function sample(): Backlog {
 
 test('each tab lists the freshest first, by the date it shows', () => {
   const backlog = sample()
-  expect(tabCounts(backlog)).toEqual({ open: 2, done: 1, all: 4 })
+  // The one dropped as not needed (b2) is on neither tab.
+  expect(tabCounts(backlog)).toEqual({ open: 2, done: 1 })
   expect(rowsOf(backlog, 'open').map(row => row.id)).toEqual(['b4', 'b3'])
   expect(rowsOf(backlog, 'done').map(row => row.id)).toEqual(['b1'])
-  // Everything together: the day a current one was added, the day a closed one was closed.
-  expect(rowsOf(backlog, 'all').map(row => `${row.id} ${row.state}`)).toEqual(['b4 open', 'b1 done', 'b2 dropped', 'b3 open'])
 })
 
 test('a date reads dd.mm, with the year only when it is not this one, and each line says what it is', () => {
@@ -187,19 +191,21 @@ test('a date reads dd.mm, with the year only when it is not this one, and each l
   const [fresh, old] = rowsOf(sample(), 'open')
   expect(rowMeta(fresh!, NOW)).toBe('14.10 · ты')
   expect(rowMeta(old!, NOW)).toBe('07.10 · Claude · давно, ещё нужно?')
-  const [done, dropped] = rowsOf(sample(), 'all').filter(row => row.state !== 'open')
+  const [done] = rowsOf(sample(), 'done')
   expect(rowMeta(done!, NOW)).toBe('сделано 13.10 · добавлено 10.10')
-  // Added and dropped on one day: said once.
-  expect(rowMeta(dropped!, NOW)).toBe('не актуально 12.10')
+  // Added and done on one day: said once.
+  expect(rowMeta({ ...done!, at: done!.day }, NOW)).toBe('сделано 13.10')
 })
 
-test('the pane has three tabs with their counts, the freshest on top and a date on every item', async ($, on) => {
+test('the pane has two tabs with their counts, the freshest on top and a date on every item', async ($, on) => {
   const disk = new Map<string, unknown>([[KEY, sample()]])
   world(on, disk)
   await start($)
   const pane = await $.ui.mount(OPEN)
-  const labels = (await pane.findAll({ type: 'Button' })).map(button => button.text)
-  expect(labels).toEqual(expect.arrayContaining(['Текущие 2', 'Выполненные 1', 'Все 4']))
+  const labels = (await pane.findAll({ type: 'Button' })).map(button => String(button.text))
+  expect(labels).toEqual(expect.arrayContaining(['Текущие 2', 'Выполненные 1']))
+  // There is no "Все" tab.
+  expect(labels.some(label => label.startsWith('Все'))).toBe(false)
 
   const order = async () => (await pane.findAll({ type: 'Text' })).map(found => String(found.text))
   let texts = await order()
@@ -209,14 +215,12 @@ test('the pane has three tabs with their counts, the freshest on top and a date 
   expect(texts).toContain('07.10 · Claude · давно, ещё нужно?')
   expect(texts).toContain('Давно висят: 1. Возможно, уже сделаны.')
 
-  await pane.press({ key: 'tab-all' })
-  texts = await order()
-  expect(texts).toContain('сделано 13.10 · добавлено 10.10')
-  expect(texts).toContain('не актуально 12.10')
   await pane.press({ key: 'tab-done' })
   texts = await order()
   expect(texts).toContain('Сделанная задача')
+  expect(texts).toContain('сделано 13.10 · добавлено 10.10')
   expect(texts).not.toContain('Свежая задача')
+  expect(texts).not.toContain('Ненужная задача')
 })
 
 test('the done tab is a long history: far more than ten closed items are kept', () => {
@@ -229,7 +233,7 @@ test('the done tab is a long history: far more than ten closed items are kept', 
   expect(tabCounts(backlog).done).toBe(40)
 })
 
-test('the pane is one tight column: the field on top, no project name, no dot, one row of buttons with an icon for "не актуально"', async ($, on) => {
+test('the pane is one tight column: the field on top, no project name, no dot, one row of buttons with a cross for "не актуально"', async ($, on) => {
   const disk = new Map<string, unknown>([[KEY, sample()]])
   world(on, disk)
   await start($)
@@ -245,12 +249,7 @@ test('the pane is one tight column: the field on top, no project name, no dot, o
   expect(texts).not.toContain('○')
   expect(buttons.filter(key => String(key).endsWith('-b4'))).toEqual(['take-b4', 'done-b4', 'drop-b4'])
 
-  // "Все" marks only what is closed; "Выполненные" has no field to add to.
-  await pane.press({ key: 'tab-all' })
-  const all = (await pane.findAll({ type: 'Text' })).map(found => String(found.text))
-  expect(all).toContain('✓')
-  expect(all).toContain('✕')
-  expect(all).not.toContain('○')
+  // "Выполненные" has no field to add to.
   await pane.press({ key: 'tab-done' })
   expect(await pane.find({ type: 'Input', key: 'add-text' })).toBeUndefined()
   expect(await pane.find({ type: 'Text', text: 'ДОБАВИТЬ НА ПОТОМ' })).toBeUndefined()
