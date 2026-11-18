@@ -223,8 +223,8 @@ export const register: Register = on => {
         ? [
             <Button key={`take-${row.id}`} label="в работу" onPress={() => void takeItem($, row.id)} />,
             <Button key={`done-${row.id}`} label="✓ сделано" onPress={() => void closeItem($, row.id, 'done')} />,
-            // Just an icon, red of its own: a button takes only a string, no colour of its own.
-            <Button key={`drop-${row.id}`} label="❌" onPress={() => void closeItem($, row.id, 'dropped')} />,
+            // Just a small cross, grey (dim) until the pointer is on it: a button takes only a string and no colour of its own.
+            <Button key={`drop-${row.id}`} dimColor label="✕" onPress={() => void closeItem($, row.id, 'dropped')} />,
           ]
         : row.state === 'done'
           ? [
