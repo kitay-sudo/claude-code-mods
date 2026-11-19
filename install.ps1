@@ -3,7 +3,7 @@
 # правка мода сама появляется во всех открытых чатах.
 # Можно запускать сколько угодно раз; после нового мода запусти ещё раз.
 #
-#   powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\.claude\mods\install.ps1"
+#   powershell -ExecutionPolicy Bypass -File "<папка с модами>\install.ps1"
 #
 # Что делает:
 #   1. Прописывает в ~/.claude/settings.json папки модов (CLAUDE_CODE_PLUGIN_DIRS)

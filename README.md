@@ -2,7 +2,7 @@
   <img src="docs/banner.png" alt="Четыре цветных блока соединены, как детали пазла, над строкой терминала" width="100%">
 </p>
 
-# Claude Code Mods
+# modkit
 
 Пять небольших модов для Claude Code. Они показывают кэш и расход над полем ввода, подсказывают следующий шаг, ведут бэклог проекта и следят, чтобы тесты шли раньше кода.
 
@@ -21,19 +21,19 @@
 
 ```text
 Поставь мне моды для Claude Code из репозитория
-https://github.com/kitay-sudo/claude-code-mods и настрой их.
+https://github.com/kitay-sudo/modkit и настрой их.
 Делай сам, по шагам, и после каждого шага коротко говори, что сделано.
 
 1. Проверь, что установлен Git (git --version). Если нет, спроси у меня разрешения и поставь:
    winget install --id Git.Git -e
 
-2. Скачай репозиторий в папку .claude\mods внутри моей домашней папки:
-   git clone https://github.com/kitay-sudo/claude-code-mods "$env:USERPROFILE\.claude\mods"
+2. Скачай репозиторий в папку .claude\modkit внутри моей домашней папки:
+   git clone https://github.com/kitay-sudo/modkit "$env:USERPROFILE\.claude\modkit"
    Если такая папка уже есть и в ней что-то другое, ничего не трогай и спроси меня.
 
 3. Скажи мне одной фразой, что следующий скрипт допишет папки модов в файл settings.json
    (копию прежних настроек он сохранит), и запусти его:
-   powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\.claude\mods\install.ps1"
+   powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\.claude\modkit\install.ps1"
 
 4. Если я работаю в терминале, а не в приложении, предложи включить ранний доступ к модам.
    Если я соглашусь, выполни:
@@ -118,12 +118,14 @@ https://github.com/kitay-sudo/claude-code-mods и настрой их.
 Если не хотите просить Claude. Нужны Windows 10 или 11, Git и Claude Code версии 2.1.284 или новее.
 
 ```powershell
-git clone https://github.com/kitay-sudo/claude-code-mods "$env:USERPROFILE\.claude\mods"
+git clone https://github.com/kitay-sudo/modkit "$env:USERPROFILE\.claude\modkit"
 ```
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\.claude\mods\install.ps1"
+powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\.claude\modkit\install.ps1"
 ```
+
+Папку можно выбрать любую, `.claude\modkit` просто привычное место: скрипт запоминает, где лежат моды.
 
 Скрипт дописывает папки модов в `~/.claude/settings.json`, остальные настройки не трогает и оставляет копию прежних: `settings.json.before-mods.json`. Запускать его можно сколько угодно раз. Потом откройте новый чат.
 
@@ -147,12 +149,12 @@ powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\.claude\mods\install.
 Обновить, или попросите Claude "обнови мои моды":
 
 ```powershell
-git -C "$env:USERPROFILE\.claude\mods" pull
+git -C "$env:USERPROFILE\.claude\modkit" pull
 ```
 
 Открытые чаты подхватят изменения сами. Если в наборе появился новый мод, запустите `install.ps1` ещё раз и откройте новый чат.
 
-Выключить один мод: уберите его папку из `env.CLAUDE_CODE_PLUGIN_DIRS` в `~/.claude/settings.json`. Удалить всё: уберите папки оттуда и удалите папку `%USERPROFILE%\.claude\mods`. Файлы данных `*_inline-*.json` можно оставить или удалить.
+Выключить один мод: уберите его папку из `env.CLAUDE_CODE_PLUGIN_DIRS` в `~/.claude/settings.json`. Удалить всё: уберите папки оттуда и удалите папку с модами (`%USERPROFILE%\.claude\modkit`, если ставили как выше). Файлы данных `*_inline-*.json` можно оставить или удалить.
 
 ## Для тех, кто пишет моды
 
